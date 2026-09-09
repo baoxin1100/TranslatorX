@@ -1,0 +1,6 @@
+translatorx
+run_translatorx.py
+assets
+requirements.txt
+README.md
+pyappify.yml

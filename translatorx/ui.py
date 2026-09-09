@@ -26,13 +26,18 @@ from .models import LayoutMode, TranslatorConfig, WindowInfo
 from .overlay import TranslationOverlay, capture_window_bgr
 from .wgc_capture import close_wgc_capture
 from .settings import CredentialDialog, app_settings
+from .version import get_app_version
 from .windows import (
     WindowedState,
     get_window_info,
     is_target_foreground,
     list_windows,
     make_borderless_fullscreen,
+    native_message_id,
+    register_f8_hotkey,
     restore_windowed_state,
+    unregister_hotkey,
+    WM_HOTKEY,
 )
 from .worker import ProcessingWorker
 
@@ -175,6 +180,13 @@ class TitleBar(QFrame):
             '<span style="font-family: Baskerville, \'Book Antiqua\', Georgia, serif; '
             'font-style: italic; font-weight: 700; color: #24528f;">X</span>'
         )
+        version = get_app_version()
+        if version:
+            title.setText(
+                title.text()
+                + f'<span style="font-family: Segoe UI, sans-serif; font-style: normal; '
+                f'font-weight: 500; font-size: 10px; color: #748090;"> {version}</span>'
+            )
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setGeometry(0, 0, 460, 52)
@@ -232,6 +244,7 @@ class Field(QWidget):
 
 
 class MainWindow(QMainWindow):
+    HOTKEY_ID = 0x5458
     process_requested = Signal(object, object)
 
     ENGINE_ITEMS = [
@@ -273,6 +286,7 @@ class MainWindow(QMainWindow):
         self._selected_window: WindowInfo | None = None
         self._borderless_state: WindowedState | None = None
         self._borderless_hwnd = 0
+        self._f8_registered = False
         self.overlay = TranslationOverlay()
         self.credential_dialog = CredentialDialog(self)
 
@@ -286,6 +300,10 @@ class MainWindow(QMainWindow):
         self.capture_timer = QTimer(self)
         self.capture_timer.setInterval(900)
         self.capture_timer.timeout.connect(self._capture)
+        self.hotkey_timer = QTimer(self)
+        self.hotkey_timer.setInterval(120)
+        self.hotkey_timer.timeout.connect(self._sync_f8_hotkey)
+        self.hotkey_timer.start()
         QTimer.singleShot(0, self.refresh_windows)
 
     def _build_ui(self) -> None:
@@ -418,18 +436,11 @@ class MainWindow(QMainWindow):
         content.addWidget(borderless_field)
 
         content.addSpacing(2)
-        self.run_button = QPushButton("开始实时翻译    Ctrl + Enter")
+        self.run_button = QPushButton("开始实时翻译    F8")
         self.run_button.setObjectName("runButton")
         self.run_button.setEnabled(False)
         self.run_button.clicked.connect(self.toggle_running)
         content.addWidget(self.run_button)
-
-        shortcut = QApplication.instance()
-        if shortcut is not None:
-            from PySide6.QtGui import QShortcut, QKeySequence
-
-            self._shortcut = QShortcut(QKeySequence("Ctrl+Enter"), self)
-            self._shortcut.activated.connect(self.toggle_running)
 
     def _start_worker(self) -> None:
         self.worker_thread = QThread(self)
@@ -614,7 +625,7 @@ class MainWindow(QMainWindow):
         self.run_button.setProperty("running", True)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
-        self.run_button.setText("停止实时翻译")
+        self.run_button.setText("停止实时翻译    F8")
         self.engine_combo.setEnabled(False)
         self.window_combo.setEnabled(False)
         self.source_combo.setEnabled(False)
@@ -623,6 +634,30 @@ class MainWindow(QMainWindow):
         self.capture_timer.start()
         self._track_target()
         self._capture()
+
+    def _sync_f8_hotkey(self) -> None:
+        target_hwnd = int(self.window_combo.currentData() or 0)
+        should_register = bool(target_hwnd and is_target_foreground(target_hwnd))
+        if should_register == self._f8_registered:
+            return
+        if should_register:
+            self._f8_registered = register_f8_hotkey(
+                int(self.winId()), self.HOTKEY_ID
+            )
+        else:
+            unregister_hotkey(int(self.winId()), self.HOTKEY_ID)
+            self._f8_registered = False
+
+    def nativeEvent(self, event_type, message):  # noqa: N802
+        if (
+            self._f8_registered
+            and native_message_id(message) == WM_HOTKEY
+        ):
+            target_hwnd = int(self.window_combo.currentData() or 0)
+            if target_hwnd and is_target_foreground(target_hwnd):
+                self.toggle_running()
+                return True, 0
+        return super().nativeEvent(event_type, message)
 
     def _stop(self) -> None:
         self._running = False
@@ -635,7 +670,7 @@ class MainWindow(QMainWindow):
         self.run_button.setProperty("running", False)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
-        self.run_button.setText("开始实时翻译    Ctrl + Enter")
+        self.run_button.setText("开始实时翻译    F8")
         self.engine_combo.setEnabled(True)
         self.window_combo.setEnabled(True)
         self.source_combo.setEnabled(True)
@@ -739,6 +774,10 @@ class MainWindow(QMainWindow):
         self.titlebar.set_status(message)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self.hotkey_timer.stop()
+        if self._f8_registered:
+            unregister_hotkey(int(self.winId()), self.HOTKEY_ID)
+            self._f8_registered = False
         self._save_main_settings()
         self._running = False
         self._restore_borderless()

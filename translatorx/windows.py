@@ -17,6 +17,9 @@ GA_ROOTOWNER = 3
 MONITOR_DEFAULTTONEAREST = 2
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 WDA_NONE = 0x00000000
+WM_HOTKEY = 0x0312
+MOD_NOREPEAT = 0x4000
+VK_F8 = 0x77
 HWND_TOPMOST = -1
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
@@ -191,6 +194,23 @@ def is_target_foreground(hwnd: int) -> bool:
     if foreground == hwnd:
         return True
     return int(user32.GetAncestor(foreground, GA_ROOTOWNER) or 0) == hwnd
+
+
+def register_f8_hotkey(window_hwnd: int, hotkey_id: int) -> bool:
+    return bool(user32.RegisterHotKey(
+        wintypes.HWND(window_hwnd),
+        hotkey_id,
+        MOD_NOREPEAT,
+        VK_F8,
+    ))
+
+
+def unregister_hotkey(window_hwnd: int, hotkey_id: int) -> bool:
+    return bool(user32.UnregisterHotKey(wintypes.HWND(window_hwnd), hotkey_id))
+
+
+def native_message_id(message) -> int:
+    return int(wintypes.MSG.from_address(int(message)).message)
 
 
 def exclude_window_from_capture(hwnd: int) -> bool:

@@ -7,6 +7,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from translatorx.launcher import hide_pyappify_launcher
 from translatorx.logging_setup import install_qt_message_handler, setup_logging
 from translatorx.ui import APP_STYLE, MainWindow
 from translatorx.windows import enable_per_monitor_dpi_awareness
@@ -24,6 +25,9 @@ def main() -> int:
     app.setStyleSheet(APP_STYLE)
     window = MainWindow()
     window.show()
+    # Run after Qt has processed the first show event. A launcher remains
+    # visible when startup fails, but is hidden once the application is ready.
+    QTimer.singleShot(0, hide_pyappify_launcher)
     if os.environ.get("TRANSLATORX_SMOKE_TEST") == "1":
         QTimer.singleShot(2500, window.close)
     return app.exec()
