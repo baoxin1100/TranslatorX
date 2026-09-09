@@ -54,9 +54,18 @@ jobs:
           git -C $source diff --binary | Out-File pyappify_dist/launcher-branding.patch -Encoding utf8
           git -C $source archive --format=zip --output="$env:GITHUB_WORKSPACE/pyappify_dist/pyappify-v1.2.3-source.zip" HEAD
           Copy-Item "$source/LICENSE.txt" pyappify_dist/PYAPPIFY-LICENSE.txt
-          Get-ChildItem pyappify_dist -File | Get-FileHash -Algorithm SHA256 | ForEach-Object {
-            "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))"
-          } | Out-File pyappify_dist/SHA256SUMS.txt -Encoding ascii
+          # Freeze the input list before creating SHA256SUMS.txt. Otherwise the
+          # output file can enter the pipeline while it is still open for writing.
+          $files = @(Get-ChildItem pyappify_dist -File | Where-Object Name -ne 'SHA256SUMS.txt' | Sort-Object Name)
+          $checksums = @(foreach ($file in $files) {
+            $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256
+            "$($hash.Hash.ToLowerInvariant())  $($file.Name)"
+          })
+          [IO.File]::WriteAllLines(
+            (Join-Path $PWD 'pyappify_dist/SHA256SUMS.txt'),
+            [string[]] $checksums,
+            [Text.Encoding]::ASCII
+          )
       - uses: actions/upload-artifact@v4
         with:
           name: TranslatorX-windows-${{ github.ref_name }}
