@@ -8,27 +8,46 @@ from translatorx.launcher import hide_pyappify_launcher
 
 def test_hide_pyappify_launcher_calls_launcher_api(monkeypatch):
     calls = []
+    monkeypatch.setattr(
+        "translatorx.launcher.threading.Thread",
+        lambda target, **_kwargs: SimpleNamespace(start=target),
+    )
     monkeypatch.setitem(
         sys.modules,
         "pyappify",
-        SimpleNamespace(pid=123, hide_pyappify=lambda: calls.append("hidden")),
+        SimpleNamespace(
+            pid=123,
+            hide_pyappify=lambda: calls.append("hidden"),
+            kill_pyappify=lambda: calls.append("closed"),
+        ),
     )
 
     assert hide_pyappify_launcher() is True
-    assert calls == ["hidden"]
+    assert calls == ["hidden", "closed"]
 
 
 def test_hide_pyappify_launcher_does_not_break_startup(monkeypatch):
+    calls = []
+
     def fail_to_hide():
         raise RuntimeError("launcher unavailable")
 
+    monkeypatch.setattr(
+        "translatorx.launcher.threading.Thread",
+        lambda target, **_kwargs: SimpleNamespace(start=target),
+    )
     monkeypatch.setitem(
         sys.modules,
         "pyappify",
-        SimpleNamespace(pid=123, hide_pyappify=fail_to_hide),
+        SimpleNamespace(
+            pid=123,
+            hide_pyappify=fail_to_hide,
+            kill_pyappify=lambda: calls.append("closed"),
+        ),
     )
 
-    assert hide_pyappify_launcher() is False
+    assert hide_pyappify_launcher() is True
+    assert calls == ["closed"]
 
 
 def test_hide_pyappify_launcher_ignores_direct_start(monkeypatch):
@@ -36,7 +55,11 @@ def test_hide_pyappify_launcher_ignores_direct_start(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "pyappify",
-        SimpleNamespace(pid=None, hide_pyappify=lambda: calls.append("hidden")),
+        SimpleNamespace(
+            pid=None,
+            hide_pyappify=lambda: calls.append("hidden"),
+            kill_pyappify=lambda: calls.append("closed"),
+        ),
     )
 
     assert hide_pyappify_launcher() is False

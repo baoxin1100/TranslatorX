@@ -282,6 +282,7 @@ class MainWindow(QMainWindow):
         self._last_timing: dict[str, float] = {}
         self._capture_started_at = 0.0
         self._debug_capture_saved = False
+        self._capture_waiting_for_foreground = False
         self._refreshing_windows = False
         self._selected_window: WindowInfo | None = None
         self._borderless_state: WindowedState | None = None
@@ -578,6 +579,12 @@ class MainWindow(QMainWindow):
             return
         self._borderless_state = state
         self._borderless_hwnd = hwnd
+        # A style/monitor-size transition can invalidate the WGC frame pool even
+        # though the top-level HWND stays the same. Recreate it on the next frame
+        # and immediately refresh the client geometry used for cropping.
+        close_wgc_capture()
+        if self._selected_window is not None and self._selected_window.hwnd == hwnd:
+            self._selected_window = get_window_info(hwnd) or self._selected_window
         self._logger.info("目标窗口已转换为无边框全屏：hwnd=%s", hwnd)
 
     def _restore_borderless(self) -> None:
@@ -585,6 +592,9 @@ class MainWindow(QMainWindow):
             return
         hwnd = self._borderless_hwnd
         restored = restore_windowed_state(hwnd, self._borderless_state)
+        close_wgc_capture()
+        if self._selected_window is not None and self._selected_window.hwnd == hwnd:
+            self._selected_window = get_window_info(hwnd) or self._selected_window
         self._logger.info("恢复目标窗口样式：hwnd=%s success=%s", hwnd, restored)
         self._borderless_state = None
         self._borderless_hwnd = 0
@@ -706,7 +716,19 @@ class MainWindow(QMainWindow):
         if not self._running or self._worker_busy or self._selected_window is None:
             return
         if not is_target_foreground(self._selected_window.hwnd):
+            if not self._capture_waiting_for_foreground:
+                self._logger.info(
+                    "暂停截图：目标窗口不在前台 hwnd=%s",
+                    self._selected_window.hwnd,
+                )
+                self._capture_waiting_for_foreground = True
             return
+        if self._capture_waiting_for_foreground:
+            self._logger.info(
+                "恢复截图：目标窗口已回到前台 hwnd=%s",
+                self._selected_window.hwnd,
+            )
+            self._capture_waiting_for_foreground = False
         try:
             self._capture_started_at = time.perf_counter()
             self._logger.info("开始截图：hwnd=%s rect=(%s,%s,%sx%s)", self._selected_window.hwnd, self._selected_window.left, self._selected_window.top, self._selected_window.width, self._selected_window.height)
