@@ -4,7 +4,13 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from translatorx.models import LayoutMode, OcrItem, WindowInfo
-from translatorx.overlay import _is_usable_capture, build_render_items, native_rect_to_qt
+from translatorx.overlay import (
+    _is_usable_capture,
+    _is_valid_wgc_capture,
+    _normalize_qt_capture,
+    build_render_items,
+    native_rect_to_qt,
+)
 
 
 def _app():
@@ -147,3 +153,34 @@ def test_capture_validation_accepts_a_realistic_color_frame():
         for x in range(48):
             frame[y, x] = (x * 5, y * 7, (x + y) * 3)
     assert _is_usable_capture(frame, 48, 32)
+
+
+def test_wgc_validation_accepts_black_scene_with_sparse_subtitle():
+    frame = np.zeros((1600, 2560, 3), dtype=np.uint8)
+    frame[795:805, 1160:1400] = 255
+
+    assert not _is_usable_capture(frame, 2560, 1600)
+    assert _is_valid_wgc_capture(frame, 2560, 1600)
+
+
+def test_wgc_validation_rejects_wrong_shape_or_type():
+    assert not _is_valid_wgc_capture(np.zeros((10, 10, 3), dtype=np.uint8), 20, 10)
+    assert not _is_valid_wgc_capture(np.zeros((10, 20, 3), dtype=np.float32), 20, 10)
+
+
+def test_qt_capture_normalization_removes_rounding_pixel():
+    frame = np.full((1601, 2561, 3), 127, dtype=np.uint8)
+    normalized = _normalize_qt_capture(frame, 2560, 1600)
+    assert normalized.shape == (1600, 2560, 3)
+
+
+def test_qt_capture_normalization_handles_150_percent_dpi():
+    frame = np.full((2400, 3840, 3), 127, dtype=np.uint8)
+    normalized = _normalize_qt_capture(frame, 2560, 1600)
+    assert normalized.shape == (1600, 2560, 3)
+
+
+def test_qt_capture_normalization_rejects_wrong_aspect_ratio():
+    frame = np.full((1200, 3840, 3), 127, dtype=np.uint8)
+    normalized = _normalize_qt_capture(frame, 2560, 1600)
+    assert normalized.shape == frame.shape

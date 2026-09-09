@@ -158,7 +158,10 @@ class WgcCapture:
                 ctypes.cast(mapped_info.pData, _PBYTE),
                 (size.Height, mapped_info.RowPitch // 4, 4),
             )[:, :size.Width].copy()
-            return bgra[:, :, :3]
+            # Dropping alpha creates a strided view. Return an owned,
+            # C-contiguous BGR array so capture validation and OpenCV consumers
+            # receive the format promised by this backend.
+            return bgra[:, :, :3].copy()
         finally:
             if mapped:
                 self._context.Unmap(self._cpu_texture, 0)
@@ -201,7 +204,7 @@ class WgcCapture:
         if border < 0 or title_height < 0:
             return None
         cropped = frame[title_height:frame_height - border, border:frame_width - border]
-        return cropped if cropped.shape[:2] == (client_height, client_width) else None
+        return cropped.copy() if cropped.shape[:2] == (client_height, client_width) else None
 
     def _release_cpu_texture(self) -> None:
         if self._cpu_texture is not None:

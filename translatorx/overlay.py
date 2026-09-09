@@ -275,7 +275,7 @@ class TranslationOverlay(QWidget):
 
 def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
     frame = capture_window_wgc(window)
-    if _is_usable_capture(frame, window.width, window.height):
+    if _is_valid_wgc_capture(frame, window.width, window.height):
         _capture_logger.debug("截图后端=WGC hwnd=%s shape=%s", window.hwnd, frame.shape)
         return frame
     if frame is not None:
@@ -310,7 +310,9 @@ def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
                 int(window.width),
                 int(window.height),
             )
-            frame = _qt_pixmap_to_bgr(pixmap)
+            frame = _normalize_qt_capture(
+                _qt_pixmap_to_bgr(pixmap), window.width, window.height
+            )
             if _is_usable_capture(frame, window.width, window.height):
                 _capture_logger.info("截图后端=qt-hwnd hwnd=%s shape=%s", window.hwnd, frame.shape)
                 return frame
@@ -333,7 +335,9 @@ def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
             logical_rect.width(),
             logical_rect.height(),
         )
-        frame = _qt_pixmap_to_bgr(pixmap)
+        frame = _normalize_qt_capture(
+            _qt_pixmap_to_bgr(pixmap), window.width, window.height
+        )
         if _is_usable_capture(frame, window.width, window.height):
             _capture_logger.info("截图后端=qt-screen hwnd=%s shape=%s", window.hwnd, frame.shape)
             return frame
@@ -363,6 +367,33 @@ def _qt_pixmap_to_bgr(pixmap):
     return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR).copy()
 
 
+def _normalize_qt_capture(frame, width: int, height: int):
+    """Convert Qt's device-pixel result to the native client pixel size."""
+    import cv2
+    import numpy as np
+
+    if not isinstance(frame, np.ndarray) or frame.ndim != 3 or not frame.size:
+        return frame
+    frame_height, frame_width = frame.shape[:2]
+    if (frame_width, frame_height) == (width, height):
+        return np.ascontiguousarray(frame)
+
+    # Qt can round a logical screen rectangle outwards by one physical pixel.
+    if 0 <= frame_width - width <= 2 and 0 <= frame_height - height <= 2:
+        return np.ascontiguousarray(frame[:height, :width])
+
+    # QScreen.grabWindow may return device pixels even though the requested
+    # rectangle is expressed in native client pixels (for example 1.5x at
+    # 150% display scaling). Only normalize a uniform DPI scale; mismatched
+    # aspect ratios remain invalid and cannot be mistaken for the target.
+    scale_x = frame_width / max(1, width)
+    scale_y = frame_height / max(1, height)
+    if 0.5 <= scale_x <= 3.0 and abs(scale_x - scale_y) <= 0.02:
+        interpolation = cv2.INTER_AREA if scale_x > 1.0 else cv2.INTER_LINEAR
+        return cv2.resize(frame, (width, height), interpolation=interpolation)
+    return frame
+
+
 def _is_usable_capture(frame, width: int, height: int) -> bool:
     """Reject blank, malformed, or effectively single-value fallback frames."""
     import numpy as np
@@ -389,6 +420,20 @@ def _is_usable_capture(frame, width: int, height: int) -> bool:
     if np.unique(sample).size < 8:
         return False
     return True
+
+
+def _is_valid_wgc_capture(frame, width: int, height: int) -> bool:
+    """Validate WGC transport and geometry without judging scene content."""
+    import numpy as np
+
+    return bool(
+        isinstance(frame, np.ndarray)
+        and frame.dtype == np.uint8
+        and frame.ndim == 3
+        and frame.shape == (height, width, 3)
+        and frame.flags.c_contiguous
+        and frame.size
+    )
 
 
 def image_format_rgba():
