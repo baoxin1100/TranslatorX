@@ -263,7 +263,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        icon_path = Path(__file__).resolve().parent.parent / "assets" / "translatorx-icon.png"
+        icon_path = Path(__file__).resolve().parent.parent / "icons" / "icon.ico"
         self.setWindowIcon(QIcon(str(icon_path)))
         self._logger = logging.getLogger("translatorx.ui")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)

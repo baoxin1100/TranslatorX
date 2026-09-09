@@ -16,7 +16,9 @@ translatorx/TranslatorX.ini
 build/
 dist/
 pyappify_dist/
-icons/
+icons/*
+!icons/icon.ico
+!icons/icon.png
 *.spec
 
 # Local design/export bundle

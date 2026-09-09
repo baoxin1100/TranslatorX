@@ -1,6 +1,7 @@
 translatorx
 run_translatorx.py
 assets
+icons
 requirements.txt
 README.md
 pyappify.yml
