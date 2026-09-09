@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>TranslatorX · 实时窗口翻译</title>
+  <style>
+    :root {
+      --bg: #090b0f;
+      --surface: #10141a;
+      --surface-raised: #151a22;
+      --surface-hover: #1a212b;
+      --border: #28313d;
+      --border-strong: #3a4655;
+      --text: #f3f6f8;
+      --text-secondary: #a6b0bd;
+      --text-muted: #748090;
+      --accent: #3b82f6;
+      --accent-hover: #5594f8;
+      --accent-pressed: #2f6fd8;
+      --accent-soft: rgba(59, 130, 246, 0.10);
+      --accent-border: rgba(59, 130, 246, 0.38);
+      --danger: #ff7070;
+      --focus: #7eead0;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      --transition-fast: 160ms ease;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { min-height: 100%; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, select { font: inherit; }
+
+    button, select, .language-card { -webkit-tap-highlight-color: transparent; }
+
+    button:focus-visible, select:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .window {
+      width: min(540px, 100%);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+    }
+
+    .titlebar {
+      position: relative;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    .brand, .status, .title-actions, .field-label, .action-copy {
+      display: flex;
+      align-items: center;
+    }
+
+    .status { gap: 8px; color: var(--text-muted); font-size: 12px; }
+
+    .brand {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+    }
+
+    .title-actions { gap: 3px; margin-left: auto; color: var(--text-secondary); }
+    .status-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--accent); }
+
+    .icon-button {
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      color: var(--text-secondary);
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .icon-button:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border); }
+    .icon-button:active { background: var(--surface-raised); }
+    .icon-button.close-button:hover { color: #ffffff; background: rgba(255, 112, 112, 0.15); border-color: rgba(255, 112, 112, 0.42); }
+
+    .content { display: block; }
+
+    .settings-panel { padding: 24px; }
+
+    .fields { display: grid; gap: 17px; }
+    .field { display: grid; gap: 9px; }
+
+    .field-label { justify-content: space-between; color: var(--text-secondary); font-size: 13px; font-weight: 600; }
+    .field-hint { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+
+    .control-row { display: grid; grid-template-columns: 1fr 46px; gap: 9px; }
+
+    select {
+      width: 100%;
+      height: 46px;
+      appearance: none;
+      padding: 0 42px 0 14px;
+      color: var(--text);
+      background-color: var(--surface-raised);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a6b0bd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: border-color var(--transition-fast), background-color var(--transition-fast);
+    }
+
+    select:hover { background-color: var(--surface-hover); border-color: var(--border-strong); }
+
+    .refresh-button {
+      width: 46px;
+      height: 46px;
+      display: grid;
+      place-items: center;
+      color: var(--text-secondary);
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .refresh-button:hover { color: var(--accent); background: var(--surface-hover); border-color: var(--accent-border); }
+    .refresh-button.refreshing svg { animation: rotate 600ms ease; }
+
+    .language-fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .footer {
+      padding: 0 24px 24px;
+    }
+
+    .run-button {
+      width: 100%;
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 0 20px;
+      color: #ffffff;
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius-md);
+      font-weight: 750;
+      cursor: pointer;
+      transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+    }
+
+    .run-button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .run-button:active { background: var(--accent-pressed); border-color: var(--accent-pressed); }
+    .run-button.running { color: var(--text); background: var(--surface-raised); border-color: var(--accent-border); }
+    .action-copy { gap: 10px; }
+    .shortcut { padding: 2px 7px; color: rgba(255, 255, 255, .76); border: 1px solid rgba(255, 255, 255, .28); border-radius: 5px; font-size: 11px; font-weight: 650; }
+    .running .shortcut { color: var(--text-muted); border-color: var(--border-strong); }
+
+    @keyframes rotate { to { transform: rotate(360deg); } }
+
+    @media (max-width: 760px) {
+      .app-shell { padding: 14px; }
+      .window { min-height: auto; }
+      .settings-panel { padding: 22px; }
+      .footer { padding: 0 22px 22px; }
+    }
+
+    @media (max-width: 430px) {
+      .app-shell { padding: 0; }
+      .window { border: 0; border-radius: 0; }
+      .language-fields { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app-shell">
+    <section class="window" aria-label="TranslatorX 实时窗口翻译">
+      <header class="titlebar">
+        <span class="status"><span class="status-dot"></span><span id="statusText">准备就绪</span></span>
+        <div class="brand">TranslatorX</div>
+        <div class="title-actions">
+          <button class="icon-button" type="button" aria-label="打开设置" title="设置">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.1A1.7 1.7 0 0 0 8.4 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2V9.55h.3A1.7 1.7 0 0 0 4 8.4a1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.46 3.6l.06.06A1.7 1.7 0 0 0 8.4 4a1.7 1.7 0 0 0 1-.6A1.7 1.7 0 0 0 9.8 2.3V2h4.05v.3A1.7 1.7 0 0 0 15 4a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 8c.15.38.36.72.66 1 .3.28.68.46 1.1.52H21v4.05h-.1A1.7 1.7 0 0 0 19.4 15Z"/>
+            </svg>
+          </button>
+          <button class="icon-button close-button" type="button" aria-label="关闭窗口" title="关闭">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="settings-panel" aria-label="翻译配置">
+          <div class="fields">
+            <label class="field">
+              <span class="field-label"><span>翻译引擎</span><span class="field-hint">自动检测可用服务</span></span>
+              <select id="engineSelect">
+                <option>谷歌翻译</option>
+                <option>百度翻译</option>
+                <option>腾讯翻译</option>
+                <option>OpenAI 兼容接口</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span class="field-label"><span>目标窗口</span><span class="field-hint" id="windowCount">检测到 3 个窗口</span></span>
+              <span class="control-row">
+                <select id="windowSelect">
+                  <option>Cyberpunk 2077</option>
+                  <option>Visual Studio Code — TranslatorX</option>
+                  <option>Chrome — Documentation</option>
+                </select>
+                <button class="refresh-button" id="refreshButton" type="button" aria-label="刷新窗口列表" title="刷新窗口列表">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/>
+                  </svg>
+                </button>
+              </span>
+            </label>
+
+            <div class="language-fields">
+              <label class="field">
+                <span class="field-label"><span>源语言</span></span>
+                  <select id="sourceLanguage" aria-label="源语言">
+                    <option>自动检测</option>
+                    <option>英语</option>
+                    <option>日语</option>
+                    <option>韩语</option>
+                    <option>简体中文</option>
+                  </select>
+              </label>
+              <label class="field">
+                <span class="field-label"><span>目标语言</span></span>
+                  <select id="targetLanguage" aria-label="目标语言">
+                    <option>简体中文</option>
+                    <option>繁体中文</option>
+                    <option>英语</option>
+                    <option>日语</option>
+                    <option>韩语</option>
+                  </select>
+              </label>
+            </div>
+
+            <label class="field">
+              <span class="field-label"><span>译文布局</span><span class="field-hint">自动限制在窗口范围内</span></span>
+              <select id="layoutSelect">
+                <option>下方布局</option>
+                <option>右侧布局</option>
+              </select>
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <footer class="footer">
+        <button class="run-button" id="runButton" type="button">
+          <span class="action-copy">
+            <svg id="playIcon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z"/></svg>
+            <span id="runLabel">开始实时翻译</span>
+          </span>
+          <span class="shortcut">Ctrl + Enter</span>
+        </button>
+      </footer>
+    </section>
+  </main>
+
+  <script>
+    const refreshButton = document.querySelector('#refreshButton');
+    const windowCount = document.querySelector('#windowCount');
+    const runButton = document.querySelector('#runButton');
+    const runLabel = document.querySelector('#runLabel');
+    const playIcon = document.querySelector('#playIcon');
+    const statusText = document.querySelector('#statusText');
+
+    refreshButton.addEventListener('click', () => {
+      refreshButton.classList.add('refreshing');
+      windowCount.textContent = '正在扫描…';
+      window.setTimeout(() => {
+        refreshButton.classList.remove('refreshing');
+        windowCount.textContent = '已刷新 · 3 个窗口';
+      }, 650);
+    });
+
+    function toggleRun() {
+      const running = runButton.classList.toggle('running');
+      runButton.setAttribute('aria-pressed', String(running));
+      runLabel.textContent = running ? '停止实时翻译' : '开始实时翻译';
+      statusText.textContent = running ? '翻译运行中' : '准备就绪';
+      playIcon.innerHTML = running
+        ? '<path d="M7 7h10v10H7z"/>'
+        : '<path d="m8 5 11 7-11 7V5Z"/>';
+    }
+
+    runButton.addEventListener('click', toggleRun);
+    document.addEventListener('keydown', (event) => {
+      if (event.ctrlKey && event.key === 'Enter') {
+        event.preventDefault();
+        toggleRun();
+      }
+    });
+  </script>
+</body>
+</html>

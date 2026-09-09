@@ -1,0 +1,6 @@
+PySide6-Essentials>=6.9,<7
+numpy>=2.0,<3
+opencv-python>=4.10,<5
+onnxruntime>=1.20,<2
+requests>=2.32,<3
+# onnxocr is provided by the oknikke environment and includes PP-OCRv5 ONNX models.

@@ -1,0 +1,33 @@
+from __future__ import annotations
+
+import os
+import sys
+
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QApplication
+
+from translatorx.logging_setup import install_qt_message_handler, setup_logging
+from translatorx.ui import APP_STYLE, MainWindow
+from translatorx.windows import enable_per_monitor_dpi_awareness
+
+
+def main() -> int:
+    setup_logging()
+    install_qt_message_handler()
+    enable_per_monitor_dpi_awareness()
+    app = QApplication(sys.argv)
+    app.setApplicationName("TranslatorX")
+    app.setOrganizationName("TranslatorX")
+    icon_path = os.path.join(os.path.dirname(__file__), "assets", "translatorx-icon.png")
+    app.setWindowIcon(QIcon(icon_path))
+    app.setStyleSheet(APP_STYLE)
+    window = MainWindow()
+    window.show()
+    if os.environ.get("TRANSLATORX_SMOKE_TEST") == "1":
+        QTimer.singleShot(2500, window.close)
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

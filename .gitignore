@@ -1,0 +1,26 @@
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local runtime state and logs
+logs/
+translatorx/TranslatorX.ini
+
+# Build and packaging outputs
+build/
+dist/
+*.spec
+
+# Local design/export bundle
+translatorx-logo.zip
+
+# Local environment files
+.env
+.env.*
+!.env.example
