@@ -40,7 +40,7 @@ jobs:
         uses: ok-oldking/partial-sync-repo@master
         with:
           repos: |
-            https://cnb:${{ secrets.CNB_TOKEN }}@cnb.cool/baoxin1100/Translator.git
+            https://cnb:${{ secrets.CNB_TOKEN }}@cnb.cool/baoxin1100/TranslatorX
           sync_list: 'deploy.txt'
           tag: ${{ github.ref_name }}
           gitignore_file: '.update_repo_gitignore'

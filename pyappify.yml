@@ -3,7 +3,7 @@ icon: assets/translatorx-icon.png
 website: https://github.com/baoxin1100/TranslatorX/releases
 profiles:
   - name: release
-    git_url: https://cnb.cool/baoxin1100/Translator.git
+    git_url: https://cnb.cool/baoxin1100/TranslatorX
     admin: true
     main_script: run_translatorx.py
     requires_python: '3.12'
