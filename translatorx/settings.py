@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import os
+import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ctypes import wintypes
@@ -27,9 +28,15 @@ from PySide6.QtWidgets import (
 
 
 def configure_settings_storage() -> None:
-    """Store app settings beside the portable application, not in the registry."""
+    """Keep settings outside the source tree replaced by launcher updates."""
+    root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "TranslatorX"
+    destination = root / "TranslatorX" / "TranslatorX.ini"
+    legacy = Path.cwd() / "TranslatorX" / "TranslatorX.ini"
+    if legacy.is_file() and not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(legacy, destination)
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(Path.cwd()))
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(root))
 
 
 def app_settings() -> QSettings:

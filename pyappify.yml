@@ -1,0 +1,10 @@
+name: TranslatorX
+icon: assets/translatorx-icon.png
+website: https://github.com/baoxin1100/TranslatorX/releases
+profiles:
+  - name: release
+    git_url: https://github.com/baoxin1100/TranslatorX.git
+    main_script: run_translatorx.py
+    requires_python: '3.12'
+    requirements: requirements.txt
+    pip_args: '--index-url https://pypi.org/simple'

@@ -1,0 +1,72 @@
+name: Build PyAppify
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install and verify application
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt pytest
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pip check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m pytest -q
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python scripts/check_ocr.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Prepare application icons
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force icons
+          Copy-Item assets/translatorx.ico icons/icon.ico
+          Copy-Item assets/translatorx-icon.png icons/icon.png
+      - name: Build launcher and installers
+        uses: ok-oldking/pyappify-action@c5cc8fe5c9bd5c732969018694a2645474c48b7e
+        with:
+          version: v1.2.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Include launcher source and checksums
+        shell: pwsh
+        run: |
+          # The action modifies this source tree to brand the GPL launcher.
+          $source = Join-Path $env:RUNNER_TEMP 'p'
+          git -C $source diff --binary | Out-File pyappify_dist/launcher-branding.patch -Encoding utf8
+          git -C $source archive --format=zip --output="$env:GITHUB_WORKSPACE/pyappify_dist/pyappify-v1.2.3-source.zip" HEAD
+          Copy-Item "$source/LICENSE.txt" pyappify_dist/PYAPPIFY-LICENSE.txt
+          Get-ChildItem pyappify_dist -File | Get-FileHash -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))"
+          } | Out-File pyappify_dist/SHA256SUMS.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TranslatorX-windows-${{ github.ref_name }}
+          path: pyappify_dist/*
+          if-no-files-found: error
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: pyappify_dist/*
+          fail_on_unmatched_files: true

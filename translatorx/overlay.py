@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 from dataclasses import dataclass
 from ctypes import wintypes
 
@@ -16,6 +17,9 @@ from .windows import (
     include_window_in_capture,
     keep_overlay_above_fullscreen,
 )
+
+
+_capture_logger = logging.getLogger("translatorx.capture")
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,70 +274,57 @@ class TranslationOverlay(QWidget):
 
 
 def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
-    import cv2
-    import numpy as np
-
     frame = capture_window_wgc(window)
-    if frame is not None:
+    if _is_usable_capture(frame, window.width, window.height):
+        _capture_logger.debug("截图后端=WGC hwnd=%s shape=%s", window.hwnd, frame.shape)
         return frame
+    if frame is not None:
+        _capture_logger.warning(
+            "WGC 返回无效帧：hwnd=%s shape=%s，进入回退",
+            window.hwnd,
+            getattr(frame, "shape", None),
+        )
 
     screen, logical_rect = _screen_and_logical_rect(window)
     if screen is None:
         raise RuntimeError("无法确定目标窗口所在显示器")
-    # Capture the target HWND, not the desktop.  The translation overlay is a
-    # separate top-level window, so HWND capture excludes it while a desktop
-    # recorder still sees the final composed overlay.
-    window_rect = wintypes.RECT()
-    user32 = ctypes.windll.user32
-    got_rect = bool(user32.GetWindowRect(wintypes.HWND(int(window.hwnd)), ctypes.byref(window_rect)))
-    if not got_rect:
-        raise RuntimeError("无法获取目标窗口边框")
-    client_offset_x = int(window.left - window_rect.left)
-    client_offset_y = int(window.top - window_rect.top)
-    # Capture through the window DC first, matching ok-script-kes.  On some
-    # Windows/Qt combinations grabWindow(HWND) returns a non-null but stale
-    # or empty image for hardware-rendered windows.
-    frame = _capture_hwnd_bitblt(
-        int(window.hwnd),
-        client_offset_x,
-        client_offset_y,
-        int(window.width),
-        int(window.height),
-    )
-    if frame is not None and frame.size and int(frame.max()) > 0 and float(frame.std()) >= 1.0:
-        return frame
 
-    pixmap = screen.grabWindow(
-        int(window.hwnd),
-        client_offset_x,
-        client_offset_y,
-        int(window.width),
-        int(window.height),
-    )
-    if not pixmap.isNull():
-        image = pixmap.toImage().convertToFormat(image_format_rgba())
-        height = image.height()
-        width = image.width()
-        bytes_per_line = image.bytesPerLine()
-        buffer = np.frombuffer(image.bits(), dtype=np.uint8, count=image.sizeInBytes())
-        rgba = buffer.reshape((height, bytes_per_line))[:, : width * 4].reshape((height, width, 4))
-        frame = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR).copy()
-        if frame.size and int(frame.max()) > 0 and float(frame.std()) >= 1.0:
-            return frame
-
-    # Some GPU-rendered windows expose only a blank surface to HWND capture.
-    # Exclude the overlay only during the desktop fallback capture.
+    # Qt is the only fallback. Prefer Qt's HWND capture so the target window
+    # remains the source instead of silently accepting another desktop window.
     excluded = bool(overlay_hwnd) and exclude_window_from_capture(int(overlay_hwnd))
     try:
-        frame = _capture_desktop_bitblt(
-            int(window.left),
-            int(window.top),
-            int(window.width),
-            int(window.height),
+        window_rect = wintypes.RECT()
+        user32 = ctypes.windll.user32
+        got_rect = bool(
+            user32.GetWindowRect(
+                wintypes.HWND(int(window.hwnd)), ctypes.byref(window_rect)
+            )
         )
-        if frame is not None and frame.size:
-            return frame
+        if got_rect:
+            client_offset_x = int(window.left - window_rect.left)
+            client_offset_y = int(window.top - window_rect.top)
+            pixmap = screen.grabWindow(
+                int(window.hwnd),
+                client_offset_x,
+                client_offset_y,
+                int(window.width),
+                int(window.height),
+            )
+            frame = _qt_pixmap_to_bgr(pixmap)
+            if _is_usable_capture(frame, window.width, window.height):
+                _capture_logger.info("截图后端=qt-hwnd hwnd=%s shape=%s", window.hwnd, frame.shape)
+                return frame
+            _capture_logger.warning(
+                "qt-hwnd 返回无效帧：hwnd=%s shape=%s",
+                window.hwnd,
+                getattr(frame, "shape", None),
+            )
+        else:
+            _capture_logger.warning("无法获取目标窗口边框，跳过 qt-hwnd：hwnd=%s", window.hwnd)
 
+        # If Qt cannot resolve the HWND frame, use Qt's screen grab for the
+        # same client rectangle as a Qt-only fallback. No GDI path is allowed
+        # here because it can return a valid-looking wrong surface.
         screen_geometry = screen.geometry()
         pixmap = screen.grabWindow(
             0,
@@ -342,137 +333,62 @@ def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
             logical_rect.width(),
             logical_rect.height(),
         )
-        if pixmap.isNull():
-            raise RuntimeError("无法截取目标窗口客户区实时画面")
-        image = pixmap.toImage().convertToFormat(image_format_rgba())
-        height = image.height()
-        width = image.width()
-        bytes_per_line = image.bytesPerLine()
-        buffer = np.frombuffer(image.bits(), dtype=np.uint8, count=image.sizeInBytes())
-        rgba = buffer.reshape((height, bytes_per_line))[:, : width * 4].reshape((height, width, 4))
-        return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR).copy()
+        frame = _qt_pixmap_to_bgr(pixmap)
+        if _is_usable_capture(frame, window.width, window.height):
+            _capture_logger.info("截图后端=qt-screen hwnd=%s shape=%s", window.hwnd, frame.shape)
+            return frame
+        _capture_logger.warning(
+            "qt-screen 返回无效帧：hwnd=%s shape=%s",
+            window.hwnd,
+            getattr(frame, "shape", None),
+        )
+        raise RuntimeError("WGC 和 Qt 均无法截取目标窗口客户区实时画面")
     finally:
         if excluded:
             include_window_in_capture(int(overlay_hwnd))
 
 
-def _capture_desktop_bitblt(x: int, y: int, width: int, height: int):
-    """Capture physical desktop pixels without Qt DPI scaling."""
+def _qt_pixmap_to_bgr(pixmap):
     import cv2
     import numpy as np
 
-    if width <= 0 or height <= 0:
+    if pixmap.isNull():
         return None
-    gdi32 = ctypes.windll.gdi32
-    user32 = ctypes.windll.user32
-    SRCCOPY = 0x00CC0020
-    DIB_RGB_COLORS = 0
-
-    class BitmapInfoHeader(ctypes.Structure):
-        _fields_ = [
-            ("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
-            ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
-            ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
-            ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
-            ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
-            ("biClrImportant", wintypes.DWORD),
-        ]
-
-    class BitmapInfo(ctypes.Structure):
-        _fields_ = [("bmiHeader", BitmapInfoHeader), ("bmiColors", wintypes.DWORD * 3)]
-
-    desktop_dc = user32.GetDC(0)
-    if not desktop_dc:
-        return None
-    memory_dc = gdi32.CreateCompatibleDC(desktop_dc)
-    bitmap = gdi32.CreateCompatibleBitmap(desktop_dc, width, height)
-    if not memory_dc or not bitmap:
-        if memory_dc:
-            gdi32.DeleteDC(memory_dc)
-        user32.ReleaseDC(0, desktop_dc)
-        return None
-    previous = gdi32.SelectObject(memory_dc, bitmap)
-    try:
-        if not gdi32.BitBlt(memory_dc, 0, 0, width, height, desktop_dc, x, y, SRCCOPY):
-            return None
-        info = BitmapInfo()
-        info.bmiHeader.biSize = ctypes.sizeof(BitmapInfoHeader)
-        info.bmiHeader.biWidth = width
-        info.bmiHeader.biHeight = -height
-        info.bmiHeader.biPlanes = 1
-        info.bmiHeader.biBitCount = 32
-        pixels = (ctypes.c_ubyte * (width * height * 4))()
-        copied = gdi32.GetDIBits(memory_dc, bitmap, 0, height, pixels, ctypes.byref(info), DIB_RGB_COLORS)
-        if copied != height:
-            return None
-        bgra = np.frombuffer(pixels, dtype=np.uint8).reshape((height, width, 4))
-        return cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR).copy()
-    finally:
-        if previous:
-            gdi32.SelectObject(memory_dc, previous)
-        gdi32.DeleteObject(bitmap)
-        gdi32.DeleteDC(memory_dc)
-        user32.ReleaseDC(0, desktop_dc)
+    image = pixmap.toImage().convertToFormat(image_format_rgba())
+    height = image.height()
+    width = image.width()
+    bytes_per_line = image.bytesPerLine()
+    buffer = np.frombuffer(image.bits(), dtype=np.uint8, count=image.sizeInBytes())
+    rgba = buffer.reshape((height, bytes_per_line))[:, : width * 4].reshape((height, width, 4))
+    return cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR).copy()
 
 
-def _capture_hwnd_bitblt(hwnd: int, x: int, y: int, width: int, height: int):
-    """Capture a client rectangle from one HWND, excluding other top-level windows."""
-    import cv2
+def _is_usable_capture(frame, width: int, height: int) -> bool:
+    """Reject blank, malformed, or effectively single-value fallback frames."""
     import numpy as np
 
-    if width <= 0 or height <= 0:
-        return None
-    gdi32 = ctypes.windll.gdi32
-    user32 = ctypes.windll.user32
-    SRCCOPY = 0x00CC0020
-    DIB_RGB_COLORS = 0
-
-    class BitmapInfoHeader(ctypes.Structure):
-        _fields_ = [
-            ("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
-            ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
-            ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
-            ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
-            ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
-            ("biClrImportant", wintypes.DWORD),
-        ]
-
-    class BitmapInfo(ctypes.Structure):
-        _fields_ = [("bmiHeader", BitmapInfoHeader), ("bmiColors", wintypes.DWORD * 3)]
-
-    window_dc = user32.GetWindowDC(wintypes.HWND(hwnd))
-    if not window_dc:
-        return None
-    memory_dc = gdi32.CreateCompatibleDC(window_dc)
-    bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
-    if not memory_dc or not bitmap:
-        if memory_dc:
-            gdi32.DeleteDC(memory_dc)
-        user32.ReleaseDC(wintypes.HWND(hwnd), window_dc)
-        return None
-    previous = gdi32.SelectObject(memory_dc, bitmap)
-    try:
-        if not gdi32.BitBlt(memory_dc, 0, 0, width, height, window_dc, x, y, SRCCOPY):
-            return None
-        info = BitmapInfo()
-        info.bmiHeader.biSize = ctypes.sizeof(BitmapInfoHeader)
-        info.bmiHeader.biWidth = width
-        info.bmiHeader.biHeight = -height
-        info.bmiHeader.biPlanes = 1
-        info.bmiHeader.biBitCount = 32
-        info.bmiHeader.biCompression = 0
-        pixels = (ctypes.c_ubyte * (width * height * 4))()
-        copied = gdi32.GetDIBits(memory_dc, bitmap, 0, height, pixels, ctypes.byref(info), DIB_RGB_COLORS)
-        if copied != height:
-            return None
-        bgra = np.frombuffer(pixels, dtype=np.uint8).reshape((height, width, 4))
-        return cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR).copy()
-    finally:
-        if previous:
-            gdi32.SelectObject(memory_dc, previous)
-        gdi32.DeleteObject(bitmap)
-        gdi32.DeleteDC(memory_dc)
-        user32.ReleaseDC(wintypes.HWND(hwnd), window_dc)
+    if not isinstance(frame, np.ndarray):
+        return False
+    if frame.dtype != np.uint8 or frame.ndim != 3 or frame.shape != (height, width, 3):
+        return False
+    if not frame.flags.c_contiguous or not frame.size:
+        return False
+    gray = (
+        frame[:, :, 0].astype(np.uint16) * 29
+        + frame[:, :, 1].astype(np.uint16) * 150
+        + frame[:, :, 2].astype(np.uint16) * 77
+    ) // 256
+    sample = gray[:: max(1, height // 128), :: max(1, width // 128)]
+    if sample.size == 0 or int(sample.max()) == 0:
+        return False
+    low, high = np.percentile(sample, (1, 99))
+    if float(high - low) < 4.0 or float(sample.std()) < 1.0:
+        return False
+    # A failed GDI/Qt path can produce a binary mask with the expected size.
+    # Real rendered frames contain anti-aliased shades even when mostly dark.
+    if np.unique(sample).size < 8:
+        return False
+    return True
 
 
 def image_format_rgba():

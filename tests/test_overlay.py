@@ -1,9 +1,10 @@
+import numpy as np
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
 from translatorx.models import LayoutMode, OcrItem, WindowInfo
-from translatorx.overlay import build_render_items, native_rect_to_qt
+from translatorx.overlay import _is_usable_capture, build_render_items, native_rect_to_qt
 
 
 def _app():
@@ -130,3 +131,19 @@ def test_native_window_rect_preserves_monitor_relative_origin():
     logical = native_rect_to_qt(target, 1920, 0, 120, QPoint(1536, 0))
     assert logical.x() == 1680
     assert logical.y() == 80
+
+
+def test_capture_validation_rejects_blank_and_binary_fallback_frames():
+    blank = np.zeros((32, 48, 3), dtype=np.uint8)
+    binary = np.zeros((32, 48, 3), dtype=np.uint8)
+    binary[:, 24:] = 255
+    assert not _is_usable_capture(blank, 48, 32)
+    assert not _is_usable_capture(binary, 48, 32)
+
+
+def test_capture_validation_accepts_a_realistic_color_frame():
+    frame = np.zeros((32, 48, 3), dtype=np.uint8)
+    for y in range(32):
+        for x in range(48):
+            frame[y, x] = (x * 5, y * 7, (x + y) * 3)
+    assert _is_usable_capture(frame, 48, 32)
