@@ -19,6 +19,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Configure runner
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git config --global user.email "baoxin1100@users.noreply.github.com"
+          git config --global user.name "baoxin1100"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
