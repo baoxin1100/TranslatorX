@@ -1,7 +1,14 @@
 import hashlib
 
 from translatorx.models import TranslatorConfig
-from translatorx.translators import BaiduTranslator, OpenAICompatibleTranslator, TencentTranslator
+from translatorx.translators import (
+    BaiduLlmTranslator,
+    BaiduTranslator,
+    OpenAICompatibleTranslator,
+    TencentTranslator,
+    TranslationError,
+    create_translator,
+)
 
 
 class FakeResponse:
@@ -53,6 +60,52 @@ def test_baidu_batch_joins_lines_in_one_request():
     assert translator.translate_batch(["hello", "world"]) == ["你好", "世界"]
     assert len(session.calls) == 1
     assert session.calls[0][1]["data"]["q"] == "hello\nworld"
+
+
+def test_baidu_llm_uses_bearer_api_key_and_llm_model():
+    session = FakeSession({"from": "en", "to": "zh", "trans_result": [{"src": "hello", "dst": "你好"}]})
+    translator = BaiduLlmTranslator(config("baidu_llm", {
+        "baidu_app_id": "app",
+        "baidu_llm_api_key": "api-key",
+        "baidu_llm_reference": "使用游戏界面风格",
+    }), session)
+
+    assert translator.translate_batch(["hello"]) == ["你好"]
+    url, kwargs = session.calls[0]
+    assert url == "https://fanyi-api.baidu.com/ait/api/aiTextTranslate"
+    assert kwargs["headers"]["Authorization"] == "Bearer api-key"
+    assert kwargs["json"] == {
+        "appid": "app",
+        "q": "hello",
+        "from": "auto",
+        "to": "zh",
+        "model_type": "llm",
+        "reference": "使用游戏界面风格",
+    }
+
+
+def test_baidu_llm_reports_api_errors():
+    session = FakeSession({"error_code": "54001", "error_msg": "token错误"})
+    translator = BaiduLlmTranslator(config("baidu_llm", {
+        "baidu_app_id": "app",
+        "baidu_llm_api_key": "bad-key",
+    }), session)
+
+    try:
+        translator.translate_batch(["hello"])
+    except TranslationError as exc:
+        assert "54001" in str(exc)
+        assert "token错误" in str(exc)
+    else:
+        raise AssertionError("expected TranslationError")
+
+
+def test_baidu_llm_is_available_from_factory():
+    translator = create_translator(config("baidu_llm", {
+        "baidu_app_id": "app",
+        "baidu_llm_api_key": "api-key",
+    }), FakeSession({"trans_result": []}))
+    assert isinstance(translator, BaiduLlmTranslator)
 
 
 def test_openai_compatible_parses_json_array():

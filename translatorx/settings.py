@@ -50,6 +50,7 @@ def app_settings() -> QSettings:
 
 from .models import TranslatorConfig
 from .translators import create_translator
+from .version import get_app_version
 
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x01
@@ -126,6 +127,11 @@ class InterfaceTestThread(QThread):
                 bool(self.credentials.get("baidu_app_id") and self.credentials.get("baidu_secret")),
             ),
             (
+                "百度大模型翻译",
+                "baidu_llm",
+                bool(self.credentials.get("baidu_app_id") and self.credentials.get("baidu_llm_api_key")),
+            ),
+            (
                 "腾讯翻译",
                 "tencent",
                 bool(self.credentials.get("tencent_secret_id") and self.credentials.get("tencent_secret_key")),
@@ -152,7 +158,7 @@ class InterfaceTestThread(QThread):
                 return label, "失败", latency, str(exc)
 
         futures = {}
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="translatorx-interface-test") as pool:
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="translatorx-interface-test") as pool:
             for index, (label, engine, configured) in enumerate(providers):
                 if configured:
                     futures[pool.submit(test_one, label, engine)] = index
@@ -227,6 +233,25 @@ class ModelFetchThread(QThread):
 
 
 class CredentialDialog(QDialog):
+    TENCENT_REGIONS = [
+        ("华南（广州）", "ap-guangzhou"),
+        ("华东（上海）", "ap-shanghai"),
+        ("华东（南京）", "ap-nanjing"),
+        ("华北（北京）", "ap-beijing"),
+        ("西南（成都）", "ap-chengdu"),
+        ("西南（重庆）", "ap-chongqing"),
+        ("中国香港", "ap-hongkong"),
+        ("亚太东南（新加坡）", "ap-singapore"),
+        ("亚太东南（雅加达）", "ap-jakarta"),
+        ("亚太东南（曼谷）", "ap-bangkok"),
+        ("亚太东北（首尔）", "ap-seoul"),
+        ("亚太东北（东京）", "ap-tokyo"),
+        ("美国东部（弗吉尼亚）", "na-ashburn"),
+        ("美国西部（硅谷）", "na-siliconvalley"),
+        ("南美（圣保罗）", "sa-saopaulo"),
+        ("欧洲（法兰克福）", "eu-frankfurt"),
+    ]
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsDialog")
@@ -239,9 +264,10 @@ class CredentialDialog(QDialog):
 
         self.baidu_app_id = self._field("TRANSLATORX_BAIDU_APP_ID")
         self.baidu_secret = self._secret_field("TRANSLATORX_BAIDU_SECRET")
+        self.baidu_llm_api_key = self._secret_field("TRANSLATORX_BAIDU_LLM_API_KEY")
         self.tencent_secret_id = self._field("TRANSLATORX_TENCENT_SECRET_ID")
         self.tencent_secret_key = self._secret_field("TRANSLATORX_TENCENT_SECRET_KEY")
-        self.tencent_region = self._field("TRANSLATORX_TENCENT_REGION", "ap-guangzhou")
+        self.tencent_region = self._region_field()
         self.openai_base_url = self._field("TRANSLATORX_OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.openai_api_key = self._secret_field("TRANSLATORX_OPENAI_API_KEY")
         self.openai_model = self._model_field("TRANSLATORX_OPENAI_MODEL", "gpt-4.1-mini")
@@ -262,11 +288,28 @@ class CredentialDialog(QDialog):
         note.setObjectName("settingsNote")
         note.setWordWrap(True)
         root.addWidget(note)
-        root.addWidget(self._group("百度翻译", [("APP ID", self.baidu_app_id), ("密钥", self.baidu_secret)]))
+        root.addWidget(self._group(
+            "百度翻译",
+            [
+                ("APP ID", self.baidu_app_id),
+                ("通用翻译密钥", self.baidu_secret),
+                ("大模型 API Key", self.baidu_llm_api_key),
+                ("申请地址", self._application_link(
+                    "https://fanyi-api.baidu.com/", "前往百度翻译开放平台申请"
+                )),
+            ],
+        ))
         root.addWidget(
             self._group(
                 "腾讯翻译",
-                [("SecretId", self.tencent_secret_id), ("SecretKey", self.tencent_secret_key), ("地域", self.tencent_region)],
+                [
+                    ("SecretId", self.tencent_secret_id),
+                    ("SecretKey", self.tencent_secret_key),
+                    ("地域", self.tencent_region),
+                    ("申请地址", self._application_link(
+                        "https://cloud.tencent.com/", "前往腾讯云申请"
+                    )),
+                ],
             )
         )
         model_row = QWidget()
@@ -307,7 +350,17 @@ class CredentialDialog(QDialog):
         self.test_button.clicked.connect(self._start_interface_test)
         buttons.accepted.connect(self._save_and_accept)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        footer = QWidget()
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        version = get_app_version()
+        version_label = QLabel(version or "开发版")
+        version_label.setObjectName("settingsNote")
+        version_label.setAccessibleName(f"当前版本 {version or '开发版'}")
+        footer_layout.addWidget(version_label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        footer_layout.addStretch(1)
+        footer_layout.addWidget(buttons)
+        root.addWidget(footer)
 
     def _field(self, env_name: str, default: str = "") -> QLineEdit:
         value = os.environ.get(env_name, str(self._settings.value(env_name, default)))
@@ -322,6 +375,19 @@ class CredentialDialog(QDialog):
         field.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         return field
 
+    def _region_field(self) -> QComboBox:
+        saved_region = os.environ.get(
+            "TRANSLATORX_TENCENT_REGION",
+            str(self._settings.value("TRANSLATORX_TENCENT_REGION", "ap-guangzhou")),
+        ).strip()
+        field = QComboBox()
+        for name, code in self.TENCENT_REGIONS:
+            field.addItem(f"{name} · {code}", code)
+        index = field.findData(saved_region)
+        field.setCurrentIndex(index if index >= 0 else 0)
+        field.setAccessibleName("腾讯翻译服务地域")
+        return field
+
     def _secret_field(self, env_name: str) -> QLineEdit:
         environment_value = os.environ.get(env_name)
         saved_value = str(self._settings.value(f"{env_name}_DPAPI", ""))
@@ -329,6 +395,19 @@ class CredentialDialog(QDialog):
         field = QLineEdit(value)
         field.setEchoMode(QLineEdit.EchoMode.Password)
         return field
+
+    @staticmethod
+    def _application_link(url: str, text: str) -> QLabel:
+        link = QLabel(f'<a style="color:#5f9fe5;text-decoration:none" href="{url}">{text} ↗</a>')
+        link.setObjectName("settingsLink")
+        link.setOpenExternalLinks(True)
+        link.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+        )
+        link.setAccessibleName(f"{text}，在浏览器中打开")
+        link.setToolTip(url)
+        return link
 
     @staticmethod
     def _readonly_field(value: str) -> QLineEdit:
@@ -350,12 +429,16 @@ class CredentialDialog(QDialog):
     def _save_and_accept(self) -> None:
         self._settings.setValue("TRANSLATORX_BAIDU_APP_ID", self.baidu_app_id.text().strip())
         self._settings.setValue("TRANSLATORX_BAIDU_SECRET_DPAPI", _protect_secret(self.baidu_secret.text().strip()))
+        self._settings.setValue(
+            "TRANSLATORX_BAIDU_LLM_API_KEY_DPAPI",
+            _protect_secret(self.baidu_llm_api_key.text().strip()),
+        )
         self._settings.setValue("TRANSLATORX_TENCENT_SECRET_ID", self.tencent_secret_id.text().strip())
         self._settings.setValue(
             "TRANSLATORX_TENCENT_SECRET_KEY_DPAPI",
             _protect_secret(self.tencent_secret_key.text().strip()),
         )
-        self._settings.setValue("TRANSLATORX_TENCENT_REGION", self.tencent_region.text().strip())
+        self._settings.setValue("TRANSLATORX_TENCENT_REGION", self.tencent_region.currentData())
         self._settings.setValue("TRANSLATORX_OPENAI_BASE_URL", self.openai_base_url.text().strip())
         self._settings.setValue("TRANSLATORX_OPENAI_API_KEY_DPAPI", _protect_secret(self.openai_api_key.text().strip()))
         self._settings.setValue("TRANSLATORX_OPENAI_MODEL", self._model_text())
@@ -444,9 +527,10 @@ class CredentialDialog(QDialog):
         return {
             "baidu_app_id": self.baidu_app_id.text().strip(),
             "baidu_secret": self.baidu_secret.text().strip(),
+            "baidu_llm_api_key": self.baidu_llm_api_key.text().strip(),
             "tencent_secret_id": self.tencent_secret_id.text().strip(),
             "tencent_secret_key": self.tencent_secret_key.text().strip(),
-            "tencent_region": self.tencent_region.text().strip(),
+            "tencent_region": str(self.tencent_region.currentData() or "ap-guangzhou"),
             "openai_base_url": self.openai_base_url.text().strip(),
             "openai_api_key": self.openai_api_key.text().strip(),
             "openai_model": self._model_text(),

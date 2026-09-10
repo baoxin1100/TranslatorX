@@ -5,14 +5,16 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSettings, QSize, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QCloseEvent, QIcon, QMouseEvent, QPainter
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QIcon, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QRadioButton,
     QSlider,
@@ -20,24 +22,23 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QStyle,
+    QSystemTrayIcon,
 )
 
+from .hotkeys import HotkeyEventFilter
 from .models import LayoutMode, TranslatorConfig, WindowInfo
 from .overlay import TranslationOverlay, capture_window_bgr
 from .wgc_capture import close_wgc_capture
 from .settings import CredentialDialog, app_settings
-from .version import get_app_version
 from .windows import (
     WindowedState,
     get_window_info,
     is_target_foreground,
     list_windows,
     make_borderless_fullscreen,
-    native_message_id,
     register_f8_hotkey,
     restore_windowed_state,
     unregister_hotkey,
-    WM_HOTKEY,
 )
 from .worker import ProcessingWorker
 
@@ -46,6 +47,7 @@ APP_STYLE = """
 QWidget { color: #f3f6f8; font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px; }
 QMainWindow, QWidget#root { background: #090b0f; }
 QFrame#titlebar { background: #090b0f; border-bottom: 1px solid #20252c; }
+QFrame#footer { background: #090b0f; border: none; }
 QLabel#windowTitle { font-weight: 700; font-size: 18px; }
 QLabel#settingsDialogTitle { font-weight: 700; font-size: 14px; color: #f3f6f8; }
 QLabel#statusLabel, QLabel#hintLabel { color: #748090; font-size: 12px; }
@@ -57,14 +59,19 @@ QComboBox {
 QComboBox:hover { border-color: #323a45; background: #15191f; }
 QComboBox:focus { border: 2px solid #4f83c2; padding-left: 12px; }
 QComboBox::drop-down { width: 34px; border: none; }
-QComboBox QAbstractItemView { background: #101318; border: 1px solid #323a45; selection-background-color: #24528f; }
+QComboBox::down-arrow { image: url(assets/chevron-down.svg); width: 14px; height: 14px; }
+QComboBox QAbstractItemView {
+  background: #101318; border: 1px solid #323a45;
+  selection-background-color: #24528f; selection-color: #ffffff; outline: 0;
+}
+QComboBox QAbstractItemView::item:selected { background: #24528f; color: #ffffff; }
 QPushButton#refreshButton, QToolButton#titleButton, QToolButton#closeButton {
   background: transparent; border: 1px solid transparent; border-radius: 8px;
 }
 QPushButton#refreshButton { min-width: 44px; max-width: 44px; min-height: 44px; background: #101318; border-color: #20252c; font-size: 18px; }
 QPushButton#refreshButton:hover, QToolButton#titleButton:hover { color: #7ea7d2; background: #15191f; border-color: #323a45; }
 QToolButton#closeButton:hover { color: #ffffff; background: rgba(255,112,112,0.16); border-color: rgba(255,112,112,0.42); }
-QToolButton#titleButton, QToolButton#closeButton { min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; }
+QToolButton#titleButton, QToolButton#closeButton { min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px; }
 QToolButton#titleButton { font-size: 17px; }
 QPushButton#runButton {
   min-height: 52px; color: white; background: #24528f; border: 1px solid #24528f;
@@ -72,6 +79,9 @@ QPushButton#runButton {
 }
 QPushButton#runButton:hover { background: #2f66aa; border-color: #2f66aa; }
 QPushButton#runButton:pressed { background: #1d4478; border-color: #1d4478; }
+QPushButton#runButton:disabled {
+  color: #778292; background: #15191f; border-color: #262c35;
+}
 QPushButton#runButton[running="true"] { background: #101318; border-color: rgba(36,82,143,0.7); }
 QDialog { background: #090b0f; }
 QGroupBox { border: 1px solid #20252c; border-radius: 9px; margin-top: 10px; padding-top: 8px; font-weight: 600; }
@@ -86,21 +96,36 @@ QPushButton#settingsActionButton:disabled { color: #748090; background: #101318;
 QRadioButton { min-height: 34px; spacing: 8px; color: #d7dde5; }
 QRadioButton::indicator { width: 16px; height: 16px; border-radius: 9px; border: 1px solid #4a5665; background: #101318; }
 QRadioButton::indicator:hover { border-color: #4f83c2; }
-QRadioButton::indicator:checked { background: #24528f; border: 4px solid #101318; }
+QRadioButton::indicator:checked {
+  border-color: #4f83c2;
+  background: qradialgradient(cx:0.5, cy:0.5, radius:0.45, fx:0.5, fy:0.5,
+    stop:0 #4f83c2, stop:0.38 #4f83c2, stop:0.42 #101318, stop:1 #101318);
+}
 QSlider::groove:horizontal { height: 4px; background: #20252c; border-radius: 2px; }
 QSlider::sub-page:horizontal { background: #24528f; border-radius: 2px; }
 QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; background: #dceaff; border: 2px solid #24528f; border-radius: 6px; }
 QSlider::handle:horizontal:hover { background: #ffffff; border-color: #4f83c2; }
 QLabel#fontValue { min-width: 34px; color: #dceaff; font-weight: 600; }
 QLabel#settingsNote { color: #748090; }
+QToolButton#infoButton { min-width: 12px; max-width: 12px; min-height: 12px; max-height: 12px;
+  padding: 0; color: #8fa6c0; background: transparent; border: 1px solid #60758d; border-radius: 6px;
+  font-size: 7px; font-weight: 700; }
+QToolButton#infoButton:hover { color: #dceaff; border-color: #4f83c2; background: #122038; }
+QMenu { padding: 6px; background: #101318; border: 1px solid #323a45; border-radius: 7px; }
+QMenu::item { min-width: 126px; padding: 7px 14px; border-radius: 5px; }
+QMenu::item:selected { color: #ffffff; background: #24528f; }
+QDialog#closeChoiceDialog { background: #0d1015; border: 1px solid #323a45; border-radius: 12px; }
+QLabel#closeChoiceTitle { color: #f3f6f8; font-size: 16px; font-weight: 700; }
+QLabel#closeChoiceMessage { color: #8fa0b3; font-size: 12px; }
+QPushButton#trayChoiceButton, QPushButton#exitChoiceButton {
+  min-height: 38px; padding: 0 16px; border-radius: 8px; font-weight: 600;
+}
+QPushButton#trayChoiceButton { color: #ffffff; background: #24528f; border: 1px solid #24528f; }
+QPushButton#trayChoiceButton:hover { background: #2f66aa; border-color: #2f66aa; }
+QPushButton#trayChoiceButton:pressed { background: #1d4478; }
+QPushButton#exitChoiceButton { color: #e3e9f0; background: #15191f; border: 1px solid #323a45; }
+QPushButton#exitChoiceButton:hover { color: #ffffff; background: rgba(255,112,112,0.14); border-color: rgba(255,112,112,0.50); }
 """
-
-
-class StatusDot(QWidget):
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(8, 8)
-        self.setStyleSheet("background:#24528f;border-radius:4px;")
 
 
 class Switch(QWidget):
@@ -164,13 +189,13 @@ class TitleBar(QFrame):
         self.setFixedHeight(52)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 0, 8, 0)
-        layout.setSpacing(8)
-        layout.addWidget(StatusDot())
-        self.status_label = QLabel("正在加载 OCR")
-        self.status_label.setObjectName("statusLabel")
-        layout.addWidget(self.status_label)
-        layout.addStretch(1)
+        layout.setContentsMargins(24, 0, 24, 0)
+        layout.setSpacing(4)
+        logo = QLabel()
+        logo.setPixmap(window.windowIcon().pixmap(24, 24))
+        logo.setFixedSize(24, 24)
+        logo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout.addWidget(logo)
         title = QLabel("TranslatorX")
         title.setObjectName("windowTitle")
         title.setTextFormat(Qt.TextFormat.RichText)
@@ -180,33 +205,33 @@ class TitleBar(QFrame):
             '<span style="font-family: Baskerville, \'Book Antiqua\', Georgia, serif; '
             'font-style: italic; font-weight: 700; color: #24528f;">X</span>'
         )
-        version = get_app_version()
-        if version:
-            title.setText(
-                title.text()
-                + f'<span style="font-family: Segoe UI, sans-serif; font-style: normal; '
-                f'font-weight: 500; font-size: 10px; color: #748090;"> {version}</span>'
-            )
         title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setGeometry(0, 0, 460, 52)
         title.setParent(self)
+        title.setGeometry(0, 0, window.width(), self.height())
         title.raise_()
+        layout.addStretch(1)
+
+        self.status_label = QLabel("正在加载 OCR")
+        self.status_label.setObjectName("statusLabel")
+        self.status_label.hide()
 
         settings = QToolButton()
         settings.setObjectName("titleButton")
         settings_icon = Path(__file__).resolve().parent.parent / "assets" / "settings-outline.svg"
         settings.setIcon(QIcon(str(settings_icon)))
-        settings.setIconSize(QSize(18, 18))
+        settings.setIconSize(QSize(17, 17))
         settings.setToolTip("翻译服务设置")
         settings.setAccessibleName("打开翻译服务设置")
         settings.clicked.connect(window.open_settings)
         layout.addWidget(settings)
         close = QToolButton()
         close.setObjectName("closeButton")
-        close.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton))
-        close.setToolTip("关闭")
-        close.setAccessibleName("关闭窗口")
+        close_icon = Path(__file__).resolve().parent.parent / "assets" / "close.svg"
+        close.setIcon(QIcon(str(close_icon)))
+        close.setIconSize(QSize(17, 17))
+        close.setToolTip("最小化到系统托盘")
+        close.setAccessibleName("最小化到系统托盘")
         close.clicked.connect(window.close)
         layout.addWidget(close)
 
@@ -243,12 +268,52 @@ class Field(QWidget):
         layout.addWidget(control)
 
 
+class CloseChoiceDialog(QDialog):
+    HIDE_TO_TRAY = 1
+    EXIT_APPLICATION = 2
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("closeChoiceDialog")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setModal(True)
+        self.setFixedSize(340, 156)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 18)
+        root.setSpacing(9)
+        title = QLabel("关闭 TranslatorX")
+        title.setObjectName("closeChoiceTitle")
+        root.addWidget(title)
+        message = QLabel("请选择退出程序，或让程序继续在系统托盘中运行。")
+        message.setObjectName("closeChoiceMessage")
+        message.setWordWrap(True)
+        root.addWidget(message)
+        root.addStretch(1)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        exit_button = QPushButton("退出程序")
+        exit_button.setObjectName("exitChoiceButton")
+        exit_button.setAccessibleName("退出 TranslatorX")
+        exit_button.clicked.connect(lambda: self.done(self.EXIT_APPLICATION))
+        tray_button = QPushButton("隐藏到系统托盘")
+        tray_button.setObjectName("trayChoiceButton")
+        tray_button.setAccessibleName("隐藏 TranslatorX 到系统托盘")
+        tray_button.clicked.connect(lambda: self.done(self.HIDE_TO_TRAY))
+        tray_button.setDefault(True)
+        buttons.addWidget(exit_button)
+        buttons.addWidget(tray_button)
+        root.addLayout(buttons)
+
+
 class MainWindow(QMainWindow):
     HOTKEY_ID = 0x5458
     process_requested = Signal(object, object)
 
     ENGINE_ITEMS = [
         ("百度翻译", "baidu"),
+        ("百度大模型翻译", "baidu_llm"),
         ("腾讯翻译", "tencent"),
         ("OpenAI 兼容接口", "openai"),
     ]
@@ -268,8 +333,8 @@ class MainWindow(QMainWindow):
         self._logger = logging.getLogger("translatorx.ui")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedWidth(460)
-        self.resize(460, 600)
+        self.setFixedWidth(400)
+        self.resize(400, 500)
         self.setWindowTitle("TranslatorX")
         self._ui_settings = app_settings()
 
@@ -282,16 +347,19 @@ class MainWindow(QMainWindow):
         self._last_timing: dict[str, float] = {}
         self._capture_started_at = 0.0
         self._debug_capture_saved = False
-        self._capture_waiting_for_foreground = False
+        self._discard_worker_result = False
         self._refreshing_windows = False
         self._selected_window: WindowInfo | None = None
         self._borderless_state: WindowedState | None = None
         self._borderless_hwnd = 0
         self._f8_registered = False
+        self._f8_registration_failed = False
+        self._force_quit = False
         self.overlay = TranslationOverlay()
         self.credential_dialog = CredentialDialog(self)
 
         self._build_ui()
+        self._setup_tray()
         self._restore_main_settings()
         self._start_worker()
 
@@ -301,6 +369,8 @@ class MainWindow(QMainWindow):
         self.capture_timer = QTimer(self)
         self.capture_timer.setInterval(900)
         self.capture_timer.timeout.connect(self._capture)
+        self._hotkey_filter = HotkeyEventFilter(self.HOTKEY_ID, self._on_f8_hotkey)
+        QApplication.instance().installNativeEventFilter(self._hotkey_filter)
         self.hotkey_timer = QTimer(self)
         self.hotkey_timer.setInterval(120)
         self.hotkey_timer.timeout.connect(self._sync_f8_hotkey)
@@ -318,8 +388,8 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.titlebar)
 
         content = QVBoxLayout()
-        content.setContentsMargins(24, 22, 24, 24)
-        content.setSpacing(16)
+        content.setContentsMargins(24, 16, 24, 14)
+        content.setSpacing(12)
         outer.addLayout(content)
 
         self.engine_combo = QComboBox()
@@ -355,6 +425,14 @@ class MainWindow(QMainWindow):
         languages = QHBoxLayout()
         languages.setSpacing(10)
         languages.addWidget(Field("源语言", self.source_combo), 1)
+        language_direction = QLabel()
+        language_direction.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arrow_icon = Path(__file__).resolve().parent.parent / "assets" / "arrow-right.svg"
+        language_direction.setPixmap(QIcon(str(arrow_icon)).pixmap(22, 22))
+        language_direction.setFixedWidth(24)
+        language_direction.setContentsMargins(0, 24, 0, 0)
+        language_direction.setAccessibleName("源语言到目标语言")
+        languages.addWidget(language_direction)
         languages.addWidget(Field("目标语言", self.target_combo), 1)
         content.addLayout(languages)
         self.source_combo.currentIndexChanged.connect(self._save_main_settings)
@@ -400,48 +478,62 @@ class MainWindow(QMainWindow):
         display_options.setSpacing(14)
         display_options.addWidget(Field("译文布局", layout_options), 3)
         display_options.addWidget(Field("字体大小", font_control), 2)
+        content.addLayout(display_options)
+
         self.latency_switch = Switch()
         self.latency_switch.setObjectName("latencySwitch")
         self.latency_switch.setAccessibleName("显示延迟信息")
         self.latency_switch.setChecked(bool(self._ui_settings.value("show_latency", False, type=bool)))
         self.latency_switch.toggled.connect(self._latency_toggled)
-        latency_control = QWidget()
-        latency_control_layout = QHBoxLayout(latency_control)
-        latency_control_layout.setContentsMargins(0, 0, 0, 0)
-        latency_control_layout.addStretch(1)
-        latency_control_layout.addWidget(self.latency_switch)
-        display_options.addWidget(Field("延迟信息", latency_control), 1)
-        content.addLayout(display_options)
-
         self.borderless_switch = Switch()
-        self.borderless_switch.setAccessibleName("自动转换为无边框全屏")
+        self.borderless_switch.setAccessibleName("目标窗口转非独占全屏")
         self.borderless_switch.setChecked(bool(
             self._ui_settings.value("auto_borderless_fullscreen", False, type=bool)
         ))
         self.borderless_switch.toggled.connect(self._borderless_toggled)
-        borderless_note = QLabel("全屏无法显示译文时将游戏窗口化再打开此按钮")
-        borderless_note.setObjectName("settingsNote")
-        borderless_note.setWordWrap(False)
         borderless_field = QWidget()
-        borderless_layout = QVBoxLayout(borderless_field)
+        borderless_layout = QHBoxLayout(borderless_field)
         borderless_layout.setContentsMargins(0, 0, 0, 0)
         borderless_layout.setSpacing(7)
-        borderless_header = QHBoxLayout()
-        borderless_title = QLabel("自动转换为无边框全屏")
+        borderless_title = QLabel("目标窗口转非独占全屏")
         borderless_title.setObjectName("fieldLabel")
-        borderless_header.addWidget(borderless_title)
-        borderless_header.addStretch(1)
-        borderless_header.addWidget(self.borderless_switch)
-        borderless_layout.addLayout(borderless_header)
-        borderless_layout.addWidget(borderless_note, 0, Qt.AlignmentFlag.AlignLeft)
-        content.addWidget(borderless_field)
+        borderless_layout.addWidget(borderless_title)
+        info = QToolButton()
+        info.setObjectName("infoButton")
+        info.setText("i")
+        info.setToolTip("独占全屏无法显示译文时，将目标窗口化后开启此按钮")
+        info.setAccessibleName("无边框全屏使用说明")
+        borderless_layout.addWidget(info)
+        borderless_layout.addWidget(self.borderless_switch)
 
-        content.addSpacing(2)
-        self.run_button = QPushButton("开始实时翻译    F8")
+        latency_field = QWidget()
+        latency_layout = QHBoxLayout(latency_field)
+        latency_layout.setContentsMargins(0, 0, 0, 0)
+        latency_layout.setSpacing(8)
+        latency_title = QLabel("显示延迟")
+        latency_title.setObjectName("fieldLabel")
+        latency_layout.addWidget(latency_title)
+        latency_layout.addWidget(self.latency_switch)
+
+        secondary_options = QHBoxLayout()
+        secondary_options.setContentsMargins(0, 0, 0, 0)
+        secondary_options.addWidget(latency_field, 0, Qt.AlignmentFlag.AlignLeft)
+        secondary_options.addStretch(1)
+        secondary_options.addWidget(borderless_field, 0, Qt.AlignmentFlag.AlignRight)
+        content.addLayout(secondary_options)
+
+        outer.addStretch(1)
+        footer = QFrame()
+        footer.setObjectName("footer")
+        footer_layout = QVBoxLayout(footer)
+        footer_layout.setContentsMargins(24, 10, 24, 18)
+        footer_layout.setSpacing(0)
+        self.run_button = QPushButton("正在初始化 OCR…")
         self.run_button.setObjectName("runButton")
         self.run_button.setEnabled(False)
         self.run_button.clicked.connect(self.toggle_running)
-        content.addWidget(self.run_button)
+        footer_layout.addWidget(self.run_button)
+        outer.addWidget(footer)
 
     def _start_worker(self) -> None:
         self.worker_thread = QThread(self)
@@ -454,6 +546,44 @@ class MainWindow(QMainWindow):
         self.worker.timing.connect(self._on_timing)
         self.worker.failed.connect(self._on_process_failed)
         self.worker_thread.start()
+
+    def _setup_tray(self) -> None:
+        self.tray_icon = QSystemTrayIcon(self.windowIcon(), self)
+        self.tray_icon.setToolTip("TranslatorX")
+        tray_menu = QMenu(self)
+        show_action = QAction("显示 TranslatorX", self)
+        show_action.triggered.connect(self._restore_from_tray)
+        quit_action = QAction("退出", self)
+        quit_action.triggered.connect(self._quit_from_tray)
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(quit_action)
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self._tray_activated)
+        self.tray_icon.show()
+
+    def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._restore_from_tray()
+
+    def _restore_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_from_tray(self) -> None:
+        self._quit_application()
+
+    def _quit_application(self) -> None:
+        self._force_quit = True
+        self.tray_icon.hide()
+        self.close()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _restore_main_settings(self) -> None:
         def restore_combo(combo: QComboBox, key: str, default: str) -> None:
@@ -484,8 +614,9 @@ class MainWindow(QMainWindow):
     def _on_worker_ready(self) -> None:
         self._ocr_ready = True
         self._logger.info("主界面收到 OCR ready 信号")
+        self.run_button.setText("开始实时翻译  (F8)")
         self.run_button.setEnabled(self.window_combo.count() > 0)
-        self.titlebar.set_status("准备就绪")
+        self.titlebar.set_status("已就绪")
 
     def open_settings(self) -> None:
         self.credential_dialog.exec()
@@ -624,6 +755,17 @@ class MainWindow(QMainWindow):
             self.titlebar.set_status("目标窗口不可用")
             self.refresh_windows()
             return
+        # A new run must never inherit text or a WGC session from the previous
+        # target. An old in-flight worker result is discarded when it arrives.
+        close_wgc_capture()
+        self.overlay.clear()
+        self._last_items = []
+        self._last_image_size = (0, 0)
+        self._last_timing = {}
+        self._empty_frame_count = 0
+        self._debug_capture_saved = False
+        if not self._worker_busy:
+            self._discard_worker_result = False
         self._selected_window = target
         if self.borderless_switch.isChecked():
             self._enable_borderless(target.hwnd)
@@ -635,7 +777,7 @@ class MainWindow(QMainWindow):
         self.run_button.setProperty("running", True)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
-        self.run_button.setText("停止实时翻译    F8")
+        self.run_button.setText("停止实时翻译  (F8)")
         self.engine_combo.setEnabled(False)
         self.window_combo.setEnabled(False)
         self.source_combo.setEnabled(False)
@@ -645,47 +787,68 @@ class MainWindow(QMainWindow):
         self._track_target()
         self._capture()
 
-    def _sync_f8_hotkey(self) -> None:
+    def _f8_available(self) -> bool:
         target_hwnd = int(self.window_combo.currentData() or 0)
-        should_register = bool(target_hwnd and is_target_foreground(target_hwnd))
+        return bool(
+            self._ocr_ready
+            and target_hwnd
+            and QApplication.activeModalWidget() is None
+            and is_target_foreground(target_hwnd)
+        )
+
+    def _sync_f8_hotkey(self) -> None:
+        should_register = self._f8_available()
         if should_register == self._f8_registered:
             return
         if should_register:
             self._f8_registered = register_f8_hotkey(
-                int(self.winId()), self.HOTKEY_ID
+                0, self.HOTKEY_ID
             )
+            if not self._f8_registered and not self._f8_registration_failed:
+                self._logger.warning("F8 热键注册失败，可能被其他程序或另一个 TranslatorX 实例占用")
+            self._f8_registration_failed = not self._f8_registered
+            if self._f8_registered:
+                self._logger.info("F8 注册成功：target=%s", self.window_combo.currentData())
         else:
-            unregister_hotkey(int(self.winId()), self.HOTKEY_ID)
+            unregister_hotkey(0, self.HOTKEY_ID)
             self._f8_registered = False
+            self._logger.info("F8 已释放：目标不在前台或存在模态对话框")
 
-    def nativeEvent(self, event_type, message):  # noqa: N802
-        if (
-            self._f8_registered
-            and native_message_id(message) == WM_HOTKEY
-        ):
-            target_hwnd = int(self.window_combo.currentData() or 0)
-            if target_hwnd and is_target_foreground(target_hwnd):
-                self.toggle_running()
-                return True, 0
-        return super().nativeEvent(event_type, message)
+    def _on_f8_hotkey(self) -> None:
+        available = self._f8_available()
+        self._logger.info("收到 F8：registered=%s available=%s running=%s button_enabled=%s",
+                          self._f8_registered, available, self._running, self.run_button.isEnabled())
+        if self._f8_registered and available:
+            QTimer.singleShot(0, self._toggle_from_f8)
+
+    def _toggle_from_f8(self) -> None:
+        if self._f8_available():
+            self._logger.info("执行 F8 启停：running=%s", self._running)
+            self.toggle_running()
+        else:
+            self._logger.info("F8 启停取消：前台状态已变化")
 
     def _stop(self) -> None:
         self._running = False
         close_wgc_capture()
+        if self._worker_busy:
+            self._discard_worker_result = True
         self._empty_frame_count = 0
+        self._last_items = []
+        self._last_image_size = (0, 0)
+        self._last_timing = {}
         self.track_timer.stop()
         self.capture_timer.stop()
         self.overlay.clear()
-        self._restore_borderless()
         self.run_button.setProperty("running", False)
         self.run_button.style().unpolish(self.run_button)
         self.run_button.style().polish(self.run_button)
-        self.run_button.setText("开始实时翻译    F8")
+        self.run_button.setText("开始实时翻译  (F8)")
         self.engine_combo.setEnabled(True)
         self.window_combo.setEnabled(True)
         self.source_combo.setEnabled(True)
         self.target_combo.setEnabled(True)
-        self.titlebar.set_status("准备就绪")
+        self.titlebar.set_status("已就绪")
         self._save_main_settings()
 
     def _track_target(self) -> None:
@@ -699,11 +862,10 @@ class MainWindow(QMainWindow):
             return
         self._selected_window = target
         self._logger.debug("跟踪目标窗口：hwnd=%s client=(%s,%s,%sx%s)", target.hwnd, target.left, target.top, target.width, target.height)
-        if not is_target_foreground(target.hwnd):
-            self.overlay.hide()
-            self.titlebar.set_status("等待目标窗口置顶")
-            return
-        self.titlebar.set_status("翻译运行中")
+        self.overlay.sync_target_z_order(target.hwnd)
+        self.titlebar.set_status(
+            "翻译运行中" if is_target_foreground(target.hwnd) else "目标窗口位于后台"
+        )
         if self._last_items and not self.overlay.isVisible():
             self.overlay.update_content(
                 target,
@@ -715,20 +877,6 @@ class MainWindow(QMainWindow):
     def _capture(self) -> None:
         if not self._running or self._worker_busy or self._selected_window is None:
             return
-        if not is_target_foreground(self._selected_window.hwnd):
-            if not self._capture_waiting_for_foreground:
-                self._logger.info(
-                    "暂停截图：目标窗口不在前台 hwnd=%s",
-                    self._selected_window.hwnd,
-                )
-                self._capture_waiting_for_foreground = True
-            return
-        if self._capture_waiting_for_foreground:
-            self._logger.info(
-                "恢复截图：目标窗口已回到前台 hwnd=%s",
-                self._selected_window.hwnd,
-            )
-            self._capture_waiting_for_foreground = False
         try:
             self._capture_started_at = time.perf_counter()
             self._logger.info("开始截图：hwnd=%s rect=(%s,%s,%sx%s)", self._selected_window.hwnd, self._selected_window.left, self._selected_window.top, self._selected_window.width, self._selected_window.height)
@@ -768,10 +916,13 @@ class MainWindow(QMainWindow):
     def _on_processed(self, items: list, image_width: int, image_height: int) -> None:
         self._logger.info("收到处理结果：items=%s image=%sx%s", len(items), image_width, image_height)
         self._worker_busy = False
-        if not self._running or self._selected_window is None:
+        if self._discard_worker_result:
+            self._discard_worker_result = False
+            self._logger.info("丢弃上一运行会话的迟到 OCR 结果")
+            if self._running:
+                QTimer.singleShot(0, self._capture)
             return
-        if not is_target_foreground(self._selected_window.hwnd):
-            self.overlay.hide()
+        if not self._running or self._selected_window is None:
             return
         # Retain the previous translation through a transient empty OCR frame.
         if not items:
@@ -793,12 +944,29 @@ class MainWindow(QMainWindow):
 
     def _on_process_failed(self, message: str) -> None:
         self._worker_busy = False
+        if self._discard_worker_result:
+            self._discard_worker_result = False
+            if self._running:
+                QTimer.singleShot(0, self._capture)
+            return
+        if not self._ocr_ready:
+            self.run_button.setText("OCR 初始化失败")
+            self.run_button.setEnabled(False)
         self.titlebar.set_status(message)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if not self._force_quit:
+            event.ignore()
+            choice = CloseChoiceDialog(self).exec()
+            if choice == CloseChoiceDialog.HIDE_TO_TRAY:
+                self.hide()
+            elif choice == CloseChoiceDialog.EXIT_APPLICATION:
+                QTimer.singleShot(0, self._quit_application)
+            return
         self.hotkey_timer.stop()
+        QApplication.instance().removeNativeEventFilter(self._hotkey_filter)
         if self._f8_registered:
-            unregister_hotkey(int(self.winId()), self.HOTKEY_ID)
+            unregister_hotkey(0, self.HOTKEY_ID)
             self._f8_registered = False
         self._save_main_settings()
         self._running = False

@@ -31,6 +31,7 @@ LANGUAGE_NAMES = {
 
 PROVIDER_LANGUAGE_CODES = {
     "baidu": {"auto": "auto", "zh-CN": "zh", "zh-TW": "cht", "en": "en", "ja": "jp", "ko": "kor"},
+    "baidu_llm": {"auto": "auto", "zh-CN": "zh", "zh-TW": "cht", "en": "en", "ja": "jp", "ko": "kor"},
     "tencent": {"auto": "auto", "zh-CN": "zh", "zh-TW": "zh-TW", "en": "en", "ja": "ja", "ko": "ko"},
 }
 
@@ -134,6 +135,60 @@ class BaiduTranslator(Translator):
                 raise TranslationError(f"百度翻译返回异常：{data}") from exc
             if len(translated) != len(chunk):
                 # Some older accounts do not enable multi-line q; preserve correctness.
+                translated = [self._translate_one(text) for text in chunk]
+            results.extend(translated)
+        return results
+
+
+class BaiduLlmTranslator(Translator):
+    endpoint = "https://fanyi-api.baidu.com/ait/api/aiTextTranslate"
+
+    def _request(self, text: str) -> dict[str, Any]:
+        app_id = _require(self.config.credentials, "baidu_app_id", "百度 APP ID")
+        api_key = _require(self.config.credentials, "baidu_llm_api_key", "百度大模型翻译 API Key")
+        payload: dict[str, Any] = {
+            "appid": app_id,
+            "q": text,
+            "from": PROVIDER_LANGUAGE_CODES["baidu_llm"][self.config.source_language],
+            "to": PROVIDER_LANGUAGE_CODES["baidu_llm"][self.config.target_language],
+            "model_type": "llm",
+        }
+        reference = self.config.credentials.get("baidu_llm_reference", "").strip()
+        if reference:
+            payload["reference"] = reference[:500]
+        data = self._checked_json(self.session.post(
+            self.endpoint,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=self.request_timeout(30),
+        ))
+        if "error_code" in data:
+            raise TranslationError(
+                f"百度大模型翻译错误 {data['error_code']}：{data.get('error_msg', '未知错误')}"
+            )
+        return data
+
+    def _translate_one(self, text: str) -> str:
+        data = self._request(text)
+        try:
+            return "\n".join(str(item["dst"]) for item in data["trans_result"])
+        except (KeyError, TypeError) as exc:
+            raise TranslationError(f"百度大模型翻译返回异常：{data}") from exc
+
+    def translate_batch(self, texts: list[str]) -> list[str]:
+        if not texts:
+            return []
+        results: list[str] = []
+        for chunk in _batch_chunks(texts):
+            data = self._request("\n".join(chunk))
+            try:
+                translated = [str(item["dst"]) for item in data["trans_result"]]
+            except (KeyError, TypeError) as exc:
+                raise TranslationError(f"百度大模型翻译返回异常：{data}") from exc
+            if len(translated) != len(chunk):
                 translated = [self._translate_one(text) for text in chunk]
             results.extend(translated)
         return results
@@ -310,6 +365,7 @@ class OpenAICompatibleTranslator(Translator):
 def create_translator(config: TranslatorConfig, session: requests.Session | None = None) -> Translator:
     classes: dict[str, type[Translator]] = {
         "baidu": BaiduTranslator,
+        "baidu_llm": BaiduLlmTranslator,
         "tencent": TencentTranslator,
         "openai": OpenAICompatibleTranslator,
     }

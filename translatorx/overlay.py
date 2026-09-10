@@ -5,17 +5,18 @@ import logging
 from dataclasses import dataclass
 from ctypes import wintypes
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt
+from PySide6.QtCore import QPoint, QRect, QRectF, QTimer, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QPainter
 from PySide6.QtWidgets import QApplication, QWidget
 
 from .models import LayoutMode, OcrItem, WindowInfo
 from .wgc_capture import capture_window_wgc
 from .windows import (
+    constrain_overlay_show,
     exclude_window_from_capture,
     get_window_monitor_metrics,
     include_window_in_capture,
-    keep_overlay_above_fullscreen,
+    place_overlay_above_target,
 )
 
 
@@ -165,7 +166,6 @@ class TranslationOverlay(QWidget):
         flags = (
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowTransparentForInput
             | Qt.WindowType.WindowDoesNotAcceptFocus
         )
@@ -177,6 +177,7 @@ class TranslationOverlay(QWidget):
         self._font.setWeight(QFont.Weight.Normal)
         self._items: list[OverlayRenderItem] = []
         self._latency_text = ""
+        self._target_hwnd = 0
 
     @property
     def capture_exclusion_applied(self) -> bool:
@@ -197,6 +198,7 @@ class TranslationOverlay(QWidget):
         image_width: int,
         image_height: int,
     ) -> None:
+        self._target_hwnd = target.hwnd
         screen, logical_rect = _screen_and_logical_rect(target)
         self.setGeometry(logical_rect)
         self.winId()
@@ -218,12 +220,23 @@ class TranslationOverlay(QWidget):
         self.update()
         if self._items:
             self.show()
-            self.raise_()
-            keep_overlay_above_fullscreen(int(self.winId()))
+            self.sync_target_z_order(target.hwnd)
+            # QWidget.show() may finish native Tool-window ordering after this
+            # method returns. Reapply once on the next Qt event-loop turn.
+            QTimer.singleShot(0, lambda hwnd=target.hwnd: self.sync_target_z_order(hwnd))
         else:
             self.hide()
 
+    def sync_target_z_order(self, target_hwnd: int) -> None:
+        if self.isVisible():
+            place_overlay_above_target(int(self.winId()), target_hwnd)
+
+    def nativeEvent(self, event_type, message):  # noqa: N802
+        constrain_overlay_show(message, getattr(self, "_target_hwnd", 0))
+        return super().nativeEvent(event_type, message)
+
     def clear(self) -> None:
+        self._target_hwnd = 0
         self._items.clear()
         self._latency_text = ""
         self.hide()
