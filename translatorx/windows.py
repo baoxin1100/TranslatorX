@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 from dataclasses import dataclass
 from ctypes import wintypes
 
 from .models import WindowInfo
 
+
+_logger = logging.getLogger("translatorx.windows")
 
 user32 = ctypes.windll.user32
 dwmapi = getattr(ctypes.windll, "dwmapi", None)
@@ -19,9 +22,13 @@ GA_ROOT = 2
 MONITOR_DEFAULTTONEAREST = 2
 WDA_EXCLUDEFROMCAPTURE = 0x00000011
 WDA_NONE = 0x00000000
-WM_HOTKEY = 0x0312
-MOD_NOREPEAT = 0x4000
 VK_F8 = 0x77
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_SYSKEYDOWN = 0x0104
+WM_SYSKEYUP = 0x0105
+HC_ACTION = 0
 HWND_TOP = 0
 HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
@@ -79,14 +86,31 @@ user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindowLongW.restype = wintypes.LONG
 user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
 user32.SetWindowLongW.restype = wintypes.LONG
-user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
-user32.RegisterHotKey.restype = wintypes.BOOL
-user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
-user32.UnregisterHotKey.restype = wintypes.BOOL
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+
+LowLevelKeyboardProc = ctypes.WINFUNCTYPE(
+    wintypes.LPARAM, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM,
+)
+
+
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
 user32.GetAncestor.restype = wintypes.HWND
+user32.SetWindowsHookExW.argtypes = [ctypes.c_int, LowLevelKeyboardProc, wintypes.HINSTANCE, wintypes.DWORD]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+user32.CallNextHookEx.restype = wintypes.LPARAM
+user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
 user32.GetWindow.restype = wintypes.HWND
 user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -209,26 +233,51 @@ def is_target_foreground(hwnd: int) -> bool:
     return int(user32.GetAncestor(foreground, GA_ROOTOWNER) or 0) == hwnd
 
 
-def register_f8_hotkey(window_hwnd: int, hotkey_id: int) -> bool:
-    return bool(user32.RegisterHotKey(
-        wintypes.HWND(window_hwnd),
-        hotkey_id,
-        MOD_NOREPEAT,
-        VK_F8,
-    ))
+_f8_hook_handle = None
+_f8_hook_proc = None
+_f8_on_press = None
+_f8_key_down = False
 
 
-def unregister_hotkey(window_hwnd: int, hotkey_id: int) -> bool:
-    return bool(user32.UnregisterHotKey(wintypes.HWND(window_hwnd), hotkey_id))
+def _f8_keyboard_proc(nCode, wParam, lParam):
+    global _f8_key_down
+    if nCode == HC_ACTION and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP):
+        kb = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+        if kb.vkCode == VK_F8:
+            if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                if not _f8_key_down and _f8_on_press is not None:
+                    _f8_key_down = True
+                    try:
+                        _f8_on_press()
+                    except Exception:
+                        _logger.exception("F8 钩子回调异常")
+            else:
+                _f8_key_down = False
+    return user32.CallNextHookEx(_f8_hook_handle, nCode, wParam, lParam)
 
 
-def native_message_id(message) -> int:
-    return int(wintypes.MSG.from_address(int(message)).message)
+def install_f8_hook(on_f8) -> bool:
+    """Install a low-level keyboard hook that calls ``on_f8`` on the F8 key."""
+    global _f8_hook_handle, _f8_hook_proc, _f8_on_press
+    if _f8_hook_handle:
+        return True
+    _f8_on_press = on_f8
+    _f8_hook_proc = LowLevelKeyboardProc(_f8_keyboard_proc)
+    _f8_hook_handle = user32.SetWindowsHookExW(
+        WH_KEYBOARD_LL, _f8_hook_proc, None, 0
+    )
+    return bool(_f8_hook_handle)
 
 
-def is_hotkey_message(message, hotkey_id: int) -> bool:
-    msg = wintypes.MSG.from_address(int(message))
-    return msg.message == WM_HOTKEY and msg.wParam == hotkey_id
+def uninstall_f8_hook() -> None:
+    """Remove the low-level keyboard hook installed by :func:`install_f8_hook`."""
+    global _f8_hook_handle, _f8_hook_proc, _f8_on_press, _f8_key_down
+    if _f8_hook_handle:
+        user32.UnhookWindowsHookEx(_f8_hook_handle)
+    _f8_hook_handle = None
+    _f8_hook_proc = None
+    _f8_on_press = None
+    _f8_key_down = False
 
 
 def exclude_window_from_capture(hwnd: int) -> bool:

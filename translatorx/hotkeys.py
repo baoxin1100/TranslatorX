@@ -1,21 +1,6 @@
-from __future__ import annotations
+"""Deprecated: F8 handling moved to a WH_KEYBOARD_LL hook in ``windows.py``.
 
-from PySide6.QtCore import QAbstractNativeEventFilter
-
-from .windows import is_hotkey_message
-
-
-class HotkeyEventFilter(QAbstractNativeEventFilter):
-    """Receive registered hotkeys independently of QWidget native dispatch."""
-
-    def __init__(self, hotkey_id: int, callback) -> None:
-        super().__init__()
-        self.hotkey_id = hotkey_id
-        self.callback = callback
-
-    def nativeEventFilter(self, event_type, message):  # noqa: N802
-        if bytes(event_type) in (b"windows_generic_MSG", b"windows_dispatcher_MSG"):
-            if is_hotkey_message(message, self.hotkey_id):
-                self.callback()
-                return True, 0
-        return False, 0
+The ``HotkeyEventFilter`` (RegisterHotKey + WM_HOTKEY) approach was replaced by
+``install_f8_hook()`` / ``uninstall_f8_hook()`` so F8 still fires while a
+fullscreen game captures the keyboard. This module is no longer imported.
+"""

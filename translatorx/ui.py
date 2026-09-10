@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
-from .hotkeys import HotkeyEventFilter
 from .models import LayoutMode, TranslatorConfig, WindowInfo
 from .overlay import TranslationOverlay, capture_window_bgr
 from .wgc_capture import close_wgc_capture
@@ -33,12 +32,12 @@ from .settings import CredentialDialog, app_settings
 from .windows import (
     WindowedState,
     get_window_info,
+    install_f8_hook,
     is_target_foreground,
     list_windows,
     make_borderless_fullscreen,
-    register_f8_hotkey,
     restore_windowed_state,
-    unregister_hotkey,
+    uninstall_f8_hook,
 )
 from .worker import ProcessingWorker
 
@@ -308,7 +307,6 @@ class CloseChoiceDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    HOTKEY_ID = 0x5458
     process_requested = Signal(object, object)
 
     ENGINE_ITEMS = [
@@ -353,7 +351,6 @@ class MainWindow(QMainWindow):
         self._borderless_state: WindowedState | None = None
         self._borderless_hwnd = 0
         self._f8_registered = False
-        self._f8_registration_failed = False
         self._force_quit = False
         self.overlay = TranslationOverlay()
         self.credential_dialog = CredentialDialog(self)
@@ -369,8 +366,6 @@ class MainWindow(QMainWindow):
         self.capture_timer = QTimer(self)
         self.capture_timer.setInterval(900)
         self.capture_timer.timeout.connect(self._capture)
-        self._hotkey_filter = HotkeyEventFilter(self.HOTKEY_ID, self._on_f8_hotkey)
-        QApplication.instance().installNativeEventFilter(self._hotkey_filter)
         self.hotkey_timer = QTimer(self)
         self.hotkey_timer.setInterval(120)
         self.hotkey_timer.timeout.connect(self._sync_f8_hotkey)
@@ -793,7 +788,6 @@ class MainWindow(QMainWindow):
             self._ocr_ready
             and target_hwnd
             and QApplication.activeModalWidget() is None
-            and is_target_foreground(target_hwnd)
         )
 
     def _sync_f8_hotkey(self) -> None:
@@ -801,32 +795,23 @@ class MainWindow(QMainWindow):
         if should_register == self._f8_registered:
             return
         if should_register:
-            self._f8_registered = register_f8_hotkey(
-                0, self.HOTKEY_ID
-            )
-            if not self._f8_registered and not self._f8_registration_failed:
-                self._logger.warning("F8 热键注册失败，可能被其他程序或另一个 TranslatorX 实例占用")
-            self._f8_registration_failed = not self._f8_registered
+            self._f8_registered = install_f8_hook(self._on_f8_hotkey)
             if self._f8_registered:
-                self._logger.info("F8 注册成功：target=%s", self.window_combo.currentData())
+                self._logger.info("F8 钩子已安装：target=%s", self.window_combo.currentData())
+            else:
+                self._logger.warning("F8 钩子安装失败")
         else:
-            unregister_hotkey(0, self.HOTKEY_ID)
+            uninstall_f8_hook()
             self._f8_registered = False
-            self._logger.info("F8 已释放：目标不在前台或存在模态对话框")
+            self._logger.info("F8 钩子已卸载")
 
     def _on_f8_hotkey(self) -> None:
-        available = self._f8_available()
-        self._logger.info("收到 F8：registered=%s available=%s running=%s button_enabled=%s",
-                          self._f8_registered, available, self._running, self.run_button.isEnabled())
-        if self._f8_registered and available:
+        if self._f8_registered and self._f8_available():
             QTimer.singleShot(0, self._toggle_from_f8)
 
     def _toggle_from_f8(self) -> None:
         if self._f8_available():
-            self._logger.info("执行 F8 启停：running=%s", self._running)
             self.toggle_running()
-        else:
-            self._logger.info("F8 启停取消：前台状态已变化")
 
     def _stop(self) -> None:
         self._running = False
@@ -964,10 +949,8 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, self._quit_application)
             return
         self.hotkey_timer.stop()
-        QApplication.instance().removeNativeEventFilter(self._hotkey_filter)
-        if self._f8_registered:
-            unregister_hotkey(0, self.HOTKEY_ID)
-            self._f8_registered = False
+        uninstall_f8_hook()
+        self._f8_registered = False
         self._save_main_settings()
         self._running = False
         self._restore_borderless()
