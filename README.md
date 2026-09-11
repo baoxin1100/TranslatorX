@@ -31,7 +31,6 @@ PyAppify 安装版是 `<安装目录>/data/TranslatorX/config/translatorx.json` 
 所以既不会被更新时的文件同步清掉，也不会被启动器的“删除应用”一起删除）。
 首次运行会自动导入旧版 `TranslatorX.ini` 中的设置（旧文件保留不删）。
 旧 NSIS 安装用户需安装一次新版 PyAppify 包，以后由启动器更新源码和依赖。
-`installer.cfg` 仅保留用于旧 Pynsist 构建，新的 CI 不使用它。
 Release 附带 PyAppify GPL 许可证、对应上游源码和品牌修改补丁，以及 SHA-256 校验表。
 
 Windows 实时窗口 OCR 翻译工具。它使用 `onnxocr` 识别选定窗口中的文字，通过在线翻译服务翻译，并在目标窗口对应位置绘制鼠标穿透的译文层。
