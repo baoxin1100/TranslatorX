@@ -4,8 +4,8 @@ import time
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSettings, QSize, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QCloseEvent, QIcon, QMouseEvent, QPainter
+from PySide6.QtCore import QPoint, QSettings, QSize, QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QIcon, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -25,8 +25,11 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
+from .launcher import remove_launcher_shortcuts, show_launcher
 from .models import LayoutMode, TranslatorConfig, WindowInfo
 from .overlay import TranslationOverlay, capture_window_bgr
+from .updater import REPO_WEB_URL, fetch_latest_version, is_update_available
+from .version import get_app_version
 from .wgc_capture import close_wgc_capture
 from .settings import CredentialDialog, app_settings
 from .windows import (
@@ -125,6 +128,22 @@ QPushButton#trayChoiceButton:hover { background: #2f66aa; border-color: #2f66aa;
 QPushButton#trayChoiceButton:pressed { background: #1d4478; }
 QPushButton#exitChoiceButton { color: #e3e9f0; background: #15191f; border: 1px solid #323a45; }
 QPushButton#exitChoiceButton:hover { color: #ffffff; background: rgba(255,112,112,0.14); border-color: rgba(255,112,112,0.50); }
+QDialog#aboutDialog { background: #0d1015; border: 1px solid #323a45; border-radius: 12px; }
+QLabel#aboutTitle { color: #f3f6f8; font-size: 16px; font-weight: 700; }
+QLabel#aboutNote { color: #748090; font-size: 12px; }
+QLabel#aboutStatus { color: #a6b0bd; font-size: 12px; }
+QPushButton#aboutLinkButton, QPushButton#aboutUpdateButton, QPushButton#aboutCloseButton {
+  min-height: 36px; padding: 0 14px; border-radius: 8px; font-weight: 600;
+}
+QPushButton#aboutLinkButton { color: #dceaff; background: #122038; border: 1px solid #274b78; }
+QPushButton#aboutLinkButton:hover { background: #182b49; border-color: #3b6599; }
+QPushButton#aboutLinkButton:pressed { background: #0e1a2d; border-color: #4f83c2; }
+QPushButton#aboutUpdateButton { color: #ffffff; background: #24528f; border: 1px solid #24528f; }
+QPushButton#aboutUpdateButton:hover { background: #2f66aa; border-color: #2f66aa; }
+QPushButton#aboutUpdateButton:pressed { background: #1d4478; border-color: #1d4478; }
+QPushButton#aboutUpdateButton:disabled { color: #778292; background: #15191f; border-color: #262c35; }
+QPushButton#aboutCloseButton { color: #e3e9f0; background: #15191f; border: 1px solid #323a45; }
+QPushButton#aboutCloseButton:hover { color: #ffffff; background: #1c2129; border-color: #4a5665; }
 """
 
 
@@ -307,6 +326,126 @@ class CloseChoiceDialog(QDialog):
         root.addLayout(buttons)
 
 
+class UpdateCheckThread(QThread):
+    """Query the update repository without blocking the UI thread."""
+
+    checked = Signal(bool, str, str)
+
+    def run(self) -> None:  # noqa: D102
+        try:
+            latest = fetch_latest_version()
+        except Exception as exc:
+            self.checked.emit(False, "", str(exc))
+            return
+        self.checked.emit(True, latest or "", "")
+
+
+class AboutDialog(QDialog):
+    """About window with the project link and an update checker."""
+
+    update_requested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("aboutDialog")
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setModal(True)
+        self.setFixedSize(430, 250)
+
+        self.current_version = get_app_version() or "开发版"
+        self._pending_version = ""
+        self._check_thread: UpdateCheckThread | None = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 20, 22, 18)
+        root.setSpacing(9)
+
+        title = QLabel("关于 TranslatorX")
+        title.setObjectName("aboutTitle")
+        root.addWidget(title)
+
+        note = QLabel(f"当前版本：{self.current_version}")
+        note.setObjectName("aboutNote")
+        root.addWidget(note)
+
+        self.status_label = QLabel("点击“检查更新”查询远端最新版本。")
+        self.status_label.setObjectName("aboutStatus")
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.status_label)
+        root.addStretch(1)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        github_button = QPushButton("GitHub 项目主页")
+        github_button.setObjectName("aboutLinkButton")
+        github_button.setAccessibleName("在浏览器中打开 GitHub 项目主页")
+        github_button.clicked.connect(self._open_github)
+        buttons.addWidget(github_button)
+
+        self.update_button = QPushButton("检查更新")
+        self.update_button.setObjectName("aboutUpdateButton")
+        self.update_button.setAccessibleName("检查是否有新版本")
+        self.update_button.clicked.connect(self._on_update_clicked)
+        buttons.addWidget(self.update_button)
+        buttons.addStretch(1)
+
+        close_button = QPushButton("关闭")
+        close_button.setObjectName("aboutCloseButton")
+        close_button.setAccessibleName("关闭关于窗口")
+        close_button.clicked.connect(self.close)
+        buttons.addWidget(close_button)
+        root.addLayout(buttons)
+
+    def _open_github(self) -> None:
+        QDesktopServices.openUrl(QUrl(REPO_WEB_URL))
+
+    def _on_update_clicked(self) -> None:
+        if self._pending_version:
+            self.update_button.setEnabled(False)
+            self.update_requested.emit()
+            self.close()
+            return
+        self._check_updates()
+
+    def _check_updates(self) -> None:
+        if self._check_thread is not None and self._check_thread.isRunning():
+            return
+        self.update_button.setEnabled(False)
+        self.update_button.setText("正在检查…")
+        self.status_label.setText("正在查询远端版本…")
+        # Parent the worker to the main window so closing this dialog while the
+        # request is in flight cannot destroy a running QThread.
+        owner = self.parent() or self
+        thread = UpdateCheckThread(owner)
+        thread.checked.connect(self._on_checked)
+        thread.finished.connect(self._on_check_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._check_thread = thread
+        thread.start()
+
+    def _on_check_finished(self) -> None:
+        self._check_thread = None
+
+    def _on_checked(self, ok: bool, latest: str, error: str) -> None:
+        self.update_button.setEnabled(True)
+        if not ok:
+            self.status_label.setText(f"检查更新失败：{error or '未知错误'}")
+            self.update_button.setText("检查更新")
+            return
+        if not latest:
+            self.status_label.setText("未能获取远端版本信息，请稍后再试。")
+            self.update_button.setText("检查更新")
+            return
+        if is_update_available(latest, self.current_version):
+            self._pending_version = latest
+            self.status_label.setText(f"发现新版本：当前 {self.current_version} → 最新 {latest}")
+            self.update_button.setText("立刻更新")
+            self.update_button.setAccessibleName(f"立刻更新到 {latest}")
+        else:
+            self.status_label.setText(f"当前已是最新版本（{self.current_version}）")
+            self.update_button.setText("检查更新")
+
+
 class MainWindow(QMainWindow):
     process_requested = Signal(object, object)
 
@@ -354,7 +493,7 @@ class MainWindow(QMainWindow):
         self._f8_registered = False
         self._force_quit = False
         self.overlay = TranslationOverlay()
-        self.credential_dialog = CredentialDialog(self)
+        self.credential_dialog = CredentialDialog(self, on_about=self.open_about)
 
         self._build_ui()
         self._setup_tray()
@@ -372,6 +511,29 @@ class MainWindow(QMainWindow):
         self.hotkey_timer.timeout.connect(self._sync_f8_hotkey)
         self.hotkey_timer.start()
         QTimer.singleShot(0, self.refresh_windows)
+        QTimer.singleShot(0, self._drop_launcher_shortcuts)
+
+    def open_about(self) -> None:
+        dialog = AboutDialog(self)
+        dialog.update_requested.connect(self._start_launcher_update)
+        dialog.exec()
+
+    def _start_launcher_update(self) -> None:
+        if not show_launcher():
+            self.titlebar.set_status("无法打开更新启动器，请手动运行启动器")
+            return
+        self._logger.info("已打开更新启动器，正在退出当前程序")
+        QTimer.singleShot(400, self._quit_application)
+
+    def _drop_launcher_shortcuts(self) -> None:
+        """Keep only the application shortcut; PyAppify always writes both."""
+        try:
+            removed = remove_launcher_shortcuts()
+        except Exception:
+            self._logger.exception("清理启动器快捷方式失败")
+            return
+        if removed:
+            self._logger.info("已删除启动器快捷方式：%s", "; ".join(removed))
 
     def _build_ui(self) -> None:
         root = QWidget()

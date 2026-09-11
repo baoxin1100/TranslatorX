@@ -50,7 +50,6 @@ def app_settings() -> QSettings:
 
 from .models import TranslatorConfig
 from .translators import create_translator
-from .version import get_app_version
 
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x01
@@ -252,13 +251,14 @@ class CredentialDialog(QDialog):
         ("欧洲（法兰克福）", "eu-frankfurt"),
     ]
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, on_about=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsDialog")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setWindowTitle("翻译服务设置")
         self.setMinimumWidth(500)
         self._settings = app_settings()
+        self._on_about = on_about
         self._test_thread: InterfaceTestThread | None = None
         self._model_thread: ModelFetchThread | None = None
 
@@ -353,14 +353,18 @@ class CredentialDialog(QDialog):
         footer = QWidget()
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(0, 0, 0, 0)
-        version = get_app_version()
-        version_label = QLabel(version or "开发版")
-        version_label.setObjectName("settingsNote")
-        version_label.setAccessibleName(f"当前版本 {version or '开发版'}")
-        footer_layout.addWidget(version_label, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        about_button = QPushButton("关于")
+        about_button.setObjectName("settingsActionButton")
+        about_button.setAccessibleName("关于 TranslatorX，含检查更新")
+        about_button.clicked.connect(self._open_about)
+        footer_layout.addWidget(about_button, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
         footer_layout.addStretch(1)
         footer_layout.addWidget(buttons)
         root.addWidget(footer)
+
+    def _open_about(self) -> None:
+        if self._on_about is not None:
+            self._on_about()
 
     def _field(self, env_name: str, default: str = "") -> QLineEdit:
         value = os.environ.get(env_name, str(self._settings.value(env_name, default)))
