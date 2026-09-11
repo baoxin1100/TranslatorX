@@ -6,6 +6,17 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
 
+def app_dir() -> Path:
+    """Return the directory PyAppify manages for this application.
+
+    It holds ``app.json`` and ``.pyappify-shortcut.py``. When running from
+    source there is no launcher layout, so the source root is used.
+    """
+    if PACKAGE_ROOT.name.casefold() == "working":
+        return PACKAGE_ROOT.parent
+    return PACKAGE_ROOT
+
+
 def app_data_dir() -> Path:
     """Return the directory that survives launcher updates and app deletion.
 
