@@ -1,5 +1,5 @@
 name: TranslatorX
-icon: assets/translatorx-icon.png
+icon: icons/icon.png
 website: https://github.com/baoxin1100/TranslatorX/releases
 profiles:
   - name: release

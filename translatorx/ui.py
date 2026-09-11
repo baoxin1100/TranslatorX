@@ -44,9 +44,10 @@ from .worker import ProcessingWorker
 
 APP_STYLE = """
 QWidget { color: #f3f6f8; font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px; }
-QMainWindow, QWidget#root { background: #090b0f; }
-QFrame#titlebar { background: #090b0f; border-bottom: 1px solid #20252c; }
-QFrame#footer { background: #090b0f; border: none; }
+QMainWindow { background: transparent; }
+QWidget#root { background: #090b0f; border-radius: 16px; }
+QFrame#titlebar { background: #090b0f; border-bottom: 1px solid #20252c; border-top-left-radius: 16px; border-top-right-radius: 16px; }
+QFrame#footer { background: #090b0f; border: none; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px; }
 QLabel#windowTitle { font-weight: 700; font-size: 18px; }
 QLabel#settingsDialogTitle { font-weight: 700; font-size: 14px; color: #f3f6f8; }
 QLabel#statusLabel, QLabel#hintLabel { color: #748090; font-size: 12px; }
