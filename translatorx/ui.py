@@ -118,17 +118,6 @@ QToolButton#infoButton:hover { color: #dceaff; border-color: #4f83c2; background
 QMenu { padding: 6px; background: #101318; border: 1px solid #323a45; border-radius: 7px; }
 QMenu::item { min-width: 126px; padding: 7px 14px; border-radius: 5px; }
 QMenu::item:selected { color: #ffffff; background: #24528f; }
-QDialog#closeChoiceDialog { background: #0d1015; border: 1px solid #323a45; border-radius: 12px; }
-QLabel#closeChoiceTitle { color: #f3f6f8; font-size: 16px; font-weight: 700; }
-QLabel#closeChoiceMessage { color: #8fa0b3; font-size: 12px; }
-QPushButton#trayChoiceButton, QPushButton#exitChoiceButton {
-  min-height: 38px; padding: 0 16px; border-radius: 8px; font-weight: 600;
-}
-QPushButton#trayChoiceButton { color: #ffffff; background: #24528f; border: 1px solid #24528f; }
-QPushButton#trayChoiceButton:hover { background: #2f66aa; border-color: #2f66aa; }
-QPushButton#trayChoiceButton:pressed { background: #1d4478; }
-QPushButton#exitChoiceButton { color: #e3e9f0; background: #15191f; border: 1px solid #323a45; }
-QPushButton#exitChoiceButton:hover { color: #ffffff; background: rgba(255,112,112,0.14); border-color: rgba(255,112,112,0.50); }
 QDialog#aboutDialog { background: #0d1015; border: 1px solid #323a45; border-radius: 12px; }
 QLabel#aboutTitle { color: #f3f6f8; font-size: 16px; font-weight: 700; }
 QLabel#aboutNote { color: #748090; font-size: 12px; }
@@ -245,13 +234,22 @@ class TitleBar(QFrame):
         settings.setAccessibleName("打开翻译服务设置")
         settings.clicked.connect(window.open_settings)
         layout.addWidget(settings)
+        minimize = QToolButton()
+        minimize.setObjectName("titleButton")
+        minimize_icon = Path(__file__).resolve().parent.parent / "assets" / "minimize.svg"
+        minimize.setIcon(QIcon(str(minimize_icon)))
+        minimize.setIconSize(QSize(17, 17))
+        minimize.setToolTip("最小化到系统托盘")
+        minimize.setAccessibleName("最小化到系统托盘")
+        minimize.clicked.connect(window.hide_to_tray)
+        layout.addWidget(minimize)
         close = QToolButton()
         close.setObjectName("closeButton")
         close_icon = Path(__file__).resolve().parent.parent / "assets" / "close.svg"
         close.setIcon(QIcon(str(close_icon)))
         close.setIconSize(QSize(17, 17))
-        close.setToolTip("最小化到系统托盘")
-        close.setAccessibleName("最小化到系统托盘")
+        close.setToolTip("关闭程序")
+        close.setAccessibleName("关闭 TranslatorX")
         close.clicked.connect(window.close)
         layout.addWidget(close)
 
@@ -286,45 +284,6 @@ class Field(QWidget):
             header.addWidget(hint)
         layout.addLayout(header)
         layout.addWidget(control)
-
-
-class CloseChoiceDialog(QDialog):
-    HIDE_TO_TRAY = 1
-    EXIT_APPLICATION = 2
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setObjectName("closeChoiceDialog")
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
-        self.setModal(True)
-        self.setFixedSize(340, 156)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(22, 20, 22, 18)
-        root.setSpacing(9)
-        title = QLabel("关闭 TranslatorX")
-        title.setObjectName("closeChoiceTitle")
-        root.addWidget(title)
-        message = QLabel("请选择退出程序，或让程序继续在系统托盘中运行。")
-        message.setObjectName("closeChoiceMessage")
-        message.setWordWrap(True)
-        root.addWidget(message)
-        root.addStretch(1)
-
-        buttons = QHBoxLayout()
-        buttons.setSpacing(10)
-        exit_button = QPushButton("退出程序")
-        exit_button.setObjectName("exitChoiceButton")
-        exit_button.setAccessibleName("退出 TranslatorX")
-        exit_button.clicked.connect(lambda: self.done(self.EXIT_APPLICATION))
-        tray_button = QPushButton("隐藏到系统托盘")
-        tray_button.setObjectName("trayChoiceButton")
-        tray_button.setAccessibleName("隐藏 TranslatorX 到系统托盘")
-        tray_button.clicked.connect(lambda: self.done(self.HIDE_TO_TRAY))
-        tray_button.setDefault(True)
-        buttons.addWidget(exit_button)
-        buttons.addWidget(tray_button)
-        root.addLayout(buttons)
 
 
 class UpdateCheckThread(QThread):
@@ -492,7 +451,7 @@ class MainWindow(QMainWindow):
         self._borderless_state: WindowedState | None = None
         self._borderless_hwnd = 0
         self._f8_registered = False
-        self._force_quit = False
+        self._tray_hint_shown = False
         self.overlay = TranslationOverlay()
         self.credential_dialog = CredentialDialog(self, on_about=self.open_about)
 
@@ -746,11 +705,22 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
+    def hide_to_tray(self) -> None:
+        """Hide the window while the app keeps running in the system tray."""
+        self.hide()
+        if not self._tray_hint_shown:
+            self._tray_hint_shown = True
+            self.tray_icon.showMessage(
+                "TranslatorX",
+                "已最小化到系统托盘，单击托盘图标可重新打开，右键可退出。",
+                QSystemTrayIcon.MessageIcon.Information,
+                4000,
+            )
+
     def _quit_from_tray(self) -> None:
         self._quit_application()
 
     def _quit_application(self) -> None:
-        self._force_quit = True
         self.tray_icon.hide()
         self.close()
         app = QApplication.instance()
@@ -1119,14 +1089,6 @@ class MainWindow(QMainWindow):
         self.titlebar.set_status(message)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        if not self._force_quit:
-            event.ignore()
-            choice = CloseChoiceDialog(self).exec()
-            if choice == CloseChoiceDialog.HIDE_TO_TRAY:
-                self.hide()
-            elif choice == CloseChoiceDialog.EXIT_APPLICATION:
-                QTimer.singleShot(0, self._quit_application)
-            return
         self.hotkey_timer.stop()
         uninstall_f8_hook()
         self._f8_registered = False
