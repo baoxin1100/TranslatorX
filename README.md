@@ -24,8 +24,12 @@ git tag v0.1.1
 git push origin v0.1.1
 ```
 
-配置保存在 `%LOCALAPPDATA%/TranslatorX/TranslatorX/TranslatorX.ini`，
-首次运行自动导入当前工作目录中旧版配置（如果存在），避免源码升级影响密钥和设置。
+配置和日志都保存在程序目录内，不写入 `%LOCALAPPDATA%` 等程序目录之外的位置。
+源码运行时是仓库根目录下的 `config/translatorx.json` 与 `logs/`；
+PyAppify 安装版是 `<安装目录>/data/TranslatorX/config/translatorx.json` 与
+`<安装目录>/data/TranslatorX/logs/`（放在 `data/apps/<应用>` 旁边，
+所以既不会被更新时的文件同步清掉，也不会被启动器的“删除应用”一起删除）。
+首次运行会自动导入旧版 `TranslatorX.ini` 中的设置（旧文件保留不删）。
 旧 NSIS 安装用户需安装一次新版 PyAppify 包，以后由启动器更新源码和依赖。
 `installer.cfg` 仅保留用于旧 Pynsist 构建，新的 CI 不使用它。
 Release 附带 PyAppify GPL 许可证、对应上游源码和品牌修改补丁，以及 SHA-256 校验表。
@@ -56,12 +60,7 @@ Windows 实时窗口 OCR 翻译工具。它使用 `onnxocr` 识别选定窗口�
 
 默认优先使用 OpenVINO OCR 加速；如果 OpenVINO 初始化失败，会自动回退到 ONNX Runtime CPU。安装包会同时包含 `openvino`、`onnxruntime` 和 PP-OCRv5 的 `onnxocr` 运行时与模型。
 
-首次使用百度、腾讯或 OpenAI 兼容接口前，点击标题栏中的“设置”填写凭据。保存后，密钥会通过 Windows DPAPI 绑定当前用户加密存储，后续启动会自动载入；也可以使用以下环境变量：
-
-- `TRANSLATORX_BAIDU_APP_ID`、`TRANSLATORX_BAIDU_SECRET`
-- `TRANSLATORX_BAIDU_LLM_API_KEY`
-- `TRANSLATORX_TENCENT_SECRET_ID`、`TRANSLATORX_TENCENT_SECRET_KEY`、`TRANSLATORX_TENCENT_REGION`
-- `TRANSLATORX_OPENAI_BASE_URL`、`TRANSLATORX_OPENAI_API_KEY`、`TRANSLATORX_OPENAI_MODEL`
+首次使用百度、腾讯或 OpenAI 兼容接口前，点击标题栏中的“设置”填写凭据。保存后，配置写入程序目录下的 `config/translatorx.json`，其中密钥会通过 Windows DPAPI 绑定当前用户加密存储，后续启动自动载入。
 
 ## 测试
 

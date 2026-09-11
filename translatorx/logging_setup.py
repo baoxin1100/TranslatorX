@@ -8,6 +8,8 @@ from ctypes import wintypes
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from .paths import log_file_path
+
 
 def process_memory_mb() -> float | None:
     """Return the current process working set in MiB with one cheap Win32 call."""
@@ -49,7 +51,7 @@ def process_memory_mb() -> float | None:
 
 
 def log_path() -> Path:
-    return Path.cwd() / "logs" / "translatorx.log"
+    return log_file_path()
 
 
 def setup_logging() -> Path:

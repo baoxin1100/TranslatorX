@@ -4,7 +4,7 @@ import time
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSettings, QSize, QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QPoint, QSize, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QCloseEvent, QDesktopServices, QIcon, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,13 +25,15 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
+from .config_store import app_config
 from .launcher import remove_launcher_shortcuts, show_launcher
+from .paths import debug_capture_path
 from .models import LayoutMode, TranslatorConfig, WindowInfo
 from .overlay import TranslationOverlay, capture_window_bgr
 from .updater import REPO_WEB_URL, fetch_latest_version, is_update_available
 from .version import get_app_version
 from .wgc_capture import close_wgc_capture
-from .settings import CredentialDialog, app_settings
+from .settings import CredentialDialog
 from .windows import (
     WindowedState,
     get_window_info,
@@ -109,7 +111,6 @@ QSlider::sub-page:horizontal { background: #24528f; border-radius: 2px; }
 QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; background: #dceaff; border: 2px solid #24528f; border-radius: 6px; }
 QSlider::handle:horizontal:hover { background: #ffffff; border-color: #4f83c2; }
 QLabel#fontValue { min-width: 34px; color: #dceaff; font-weight: 600; }
-QLabel#settingsNote { color: #748090; }
 QToolButton#infoButton { min-width: 12px; max-width: 12px; min-height: 12px; max-height: 12px;
   padding: 0; color: #8fa6c0; background: transparent; border: 1px solid #60758d; border-radius: 6px;
   font-size: 7px; font-weight: 700; }
@@ -474,7 +475,7 @@ class MainWindow(QMainWindow):
         self.setFixedWidth(400)
         self.resize(400, 500)
         self.setWindowTitle("TranslatorX")
-        self._ui_settings = app_settings()
+        self._ui_settings = app_config()
 
         self._running = False
         self._worker_busy = False
@@ -1047,9 +1048,11 @@ class MainWindow(QMainWindow):
                 try:
                     import cv2
 
-                    cv2.imwrite(str(Path.cwd() / "logs" / "debug_capture.png"), image)
+                    target = debug_capture_path()
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(target), image)
                     self._debug_capture_saved = True
-                    self._logger.info("调试截图已保存：logs/debug_capture.png")
+                    self._logger.info("调试截图已保存：%s", target)
                 except Exception:
                     self._logger.exception("保存调试截图失败")
             self._logger.info(

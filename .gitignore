@@ -10,6 +10,8 @@ htmlcov/
 
 # Local runtime state and logs
 logs/
+/config/
+# Legacy QSettings file; holds credentials and must never be committed
 translatorx/TranslatorX.ini
 
 # Build and packaging outputs

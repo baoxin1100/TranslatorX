@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import base64
 import ctypes
-import os
-import shutil
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ctypes import wintypes
 from time import perf_counter
 
 import requests
-from PySide6.QtCore import QSettings, QThread, Signal, Qt
+from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -27,27 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 
-def configure_settings_storage() -> None:
-    """Keep settings outside the source tree replaced by launcher updates."""
-    root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "TranslatorX"
-    destination = root / "TranslatorX" / "TranslatorX.ini"
-    legacy = Path.cwd() / "TranslatorX" / "TranslatorX.ini"
-    if legacy.is_file() and not destination.exists():
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(legacy, destination)
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(root))
-
-
-def app_settings() -> QSettings:
-    configure_settings_storage()
-    return QSettings(
-        QSettings.Format.IniFormat,
-        QSettings.Scope.UserScope,
-        "TranslatorX",
-        "TranslatorX",
-    )
-
+from .config_store import app_config
 from .models import TranslatorConfig
 from .translators import create_translator
 
@@ -257,7 +234,7 @@ class CredentialDialog(QDialog):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setWindowTitle("翻译服务设置")
         self.setMinimumWidth(500)
-        self._settings = app_settings()
+        self._settings = app_config()
         self._on_about = on_about
         self._test_thread: InterfaceTestThread | None = None
         self._model_thread: ModelFetchThread | None = None
@@ -284,10 +261,6 @@ class CredentialDialog(QDialog):
         header_layout.addWidget(header_title)
         header_layout.addStretch(1)
         root.addWidget(header)
-        note = QLabel("密钥使用 Windows 当前用户加密后保存；也可通过 TRANSLATORX_* 环境变量提供。")
-        note.setObjectName("settingsNote")
-        note.setWordWrap(True)
-        root.addWidget(note)
         root.addWidget(self._group(
             "百度翻译",
             [
@@ -367,11 +340,11 @@ class CredentialDialog(QDialog):
             self._on_about()
 
     def _field(self, env_name: str, default: str = "") -> QLineEdit:
-        value = os.environ.get(env_name, str(self._settings.value(env_name, default)))
+        value = str(self._settings.value(env_name, default))
         return QLineEdit(value)
 
     def _model_field(self, env_name: str, default: str = "") -> QComboBox:
-        value = os.environ.get(env_name, str(self._settings.value(env_name, default)))
+        value = str(self._settings.value(env_name, default))
         field = QComboBox()
         field.setEditable(True)
         field.addItem(value)
@@ -380,9 +353,8 @@ class CredentialDialog(QDialog):
         return field
 
     def _region_field(self) -> QComboBox:
-        saved_region = os.environ.get(
-            "TRANSLATORX_TENCENT_REGION",
-            str(self._settings.value("TRANSLATORX_TENCENT_REGION", "ap-guangzhou")),
+        saved_region = str(
+            self._settings.value("TRANSLATORX_TENCENT_REGION", "ap-guangzhou")
         ).strip()
         field = QComboBox()
         for name, code in self.TENCENT_REGIONS:
@@ -393,9 +365,8 @@ class CredentialDialog(QDialog):
         return field
 
     def _secret_field(self, env_name: str) -> QLineEdit:
-        environment_value = os.environ.get(env_name)
         saved_value = str(self._settings.value(f"{env_name}_DPAPI", ""))
-        value = environment_value if environment_value is not None else _unprotect_secret(saved_value)
+        value = _unprotect_secret(saved_value)
         field = QLineEdit(value)
         field.setEchoMode(QLineEdit.EchoMode.Password)
         return field
