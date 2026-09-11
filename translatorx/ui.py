@@ -511,7 +511,11 @@ class MainWindow(QMainWindow):
         self.hotkey_timer.timeout.connect(self._sync_f8_hotkey)
         self.hotkey_timer.start()
         QTimer.singleShot(0, self.refresh_windows)
-        QTimer.singleShot(0, self._drop_launcher_shortcuts)
+        self._shortcut_sweeps = 0
+        self._shortcut_timer = QTimer(self)
+        self._shortcut_timer.setInterval(3000)
+        self._shortcut_timer.timeout.connect(self._drop_launcher_shortcuts)
+        self._shortcut_timer.start()
 
     def open_about(self) -> None:
         dialog = AboutDialog(self)
@@ -526,7 +530,16 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(400, self._quit_application)
 
     def _drop_launcher_shortcuts(self) -> None:
-        """Keep only the application shortcut; PyAppify always writes both."""
+        """Keep only the application shortcut.
+
+        PyAppify rewrites both shortcuts a few seconds after it confirms the
+        app started, which can be later than this window's own startup. Sweep
+        repeatedly for the first minute instead of checking only once.
+        """
+        self._shortcut_sweeps += 1
+        if self._shortcut_sweeps > 20:
+            self._shortcut_timer.stop()
+            return
         try:
             removed = remove_launcher_shortcuts()
         except Exception:

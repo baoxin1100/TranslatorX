@@ -33,3 +33,17 @@ def test_sync_installs_and_uninstalls_hook(monkeypatch):
     ui.MainWindow._sync_f8_hotkey(state)
     assert state._f8_registered is False
     assert calls[-1] == "uninstall"
+
+
+def test_shortcut_sweep_stops_after_its_limit(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ui, "remove_launcher_shortcuts", lambda: calls.append("sweep") or [])
+    state = SimpleNamespace(
+        _shortcut_sweeps=0,
+        _shortcut_timer=SimpleNamespace(stop=lambda: calls.append("stop")),
+        _logger=SimpleNamespace(info=lambda *_: None, exception=lambda *_: None),
+    )
+    for _ in range(25):
+        ui.MainWindow._drop_launcher_shortcuts(state)
+    assert calls.count("sweep") == 20
+    assert "stop" in calls
