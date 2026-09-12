@@ -22,6 +22,13 @@ from .windows import (
 
 _capture_logger = logging.getLogger("translatorx.capture")
 
+# A below-layout translation may grow past the source box, but only by this
+# factor: without it a long line runs to the window edge and stops looking like
+# the text it replaces. The window edge remains the hard limit and a narrow
+# source box never squeezes the translation below MIN_BELOW_WIDTH.
+BELOW_WIDTH_FACTOR = 1.3
+MIN_BELOW_WIDTH = 48.0
+
 
 @dataclass(frozen=True, slots=True)
 class OverlayRenderItem:
@@ -132,12 +139,12 @@ def build_render_items(
         metrics = QFontMetricsF(item_font)
         natural_width = metrics.horizontalAdvance(text) + 8.0
         if layout == LayoutMode.BELOW:
-            # Only the window bounds a below-layout translation. The box is never
-            # painted, so following a wide source box costs nothing visually and
-            # lets a long line reach the source width instead of wrapping at a
-            # fixed 360 px.
-            max_width = window_width - 8.0
-            preferred_width = min(max_width, max(48.0, source.width(), natural_width))
+            # The window edge and 1.3x the source box both bound a below-layout
+            # translation. The box is never painted, so a wider one only means
+            # the line stops wrapping sooner.
+            source_limit = max(MIN_BELOW_WIDTH, source.width() * BELOW_WIDTH_FACTOR)
+            max_width = min(window_width - 8.0, source_limit)
+            preferred_width = min(max_width, max(MIN_BELOW_WIDTH, source.width(), natural_width))
             x = source.center().x() - preferred_width / 2.0
             # OCR boxes often include a little extra descent below the glyphs.
             # Let the translation sit slightly inside that lower edge so the

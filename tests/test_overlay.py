@@ -5,6 +5,8 @@ from PySide6.QtWidgets import QApplication
 
 from translatorx.models import LayoutMode, OcrItem, WindowInfo
 from translatorx.overlay import (
+    BELOW_WIDTH_FACTOR,
+    MIN_BELOW_WIDTH,
     _is_usable_capture,
     _is_valid_wgc_capture,
     _normalize_qt_capture,
@@ -122,7 +124,7 @@ def test_below_layout_follows_the_source_width_past_the_old_cap():
     assert rect.height() <= QFontMetricsF(rendered[0].font).height() + 2
 
 
-def test_below_layout_is_bounded_by_the_window_only():
+def test_below_layout_is_bounded_by_the_window_edge():
     _app()
     item = OcrItem(
         box=((100, 100), (900, 100), (900, 140), (100, 140)),
@@ -135,6 +137,36 @@ def test_below_layout_is_bounded_by_the_window_only():
     assert rect.width() <= 500 - 8
     assert rect.left() >= 0
     assert rect.right() <= 500
+
+
+def test_below_layout_stops_at_1_3_times_the_source_width():
+    _app()
+    font = QFont("Microsoft YaHei UI", 12)
+    item = OcrItem(
+        box=((100, 100), (500, 100), (500, 140), (100, 140)),
+        text="source",
+        confidence=0.99,
+        translation="A translation that is far too long to fit on one line inside the allowance",
+    )
+    rendered = build_render_items([item], LayoutMode.BELOW, 1920, 1080, 1920, 1080, font)
+    rect = rendered[0].rect
+    expected = 400.0 * BELOW_WIDTH_FACTOR
+    assert abs(rect.width() - expected) < 0.01
+    # Longer than the allowance, so it wraps.
+    assert rect.height() > QFontMetricsF(rendered[0].font).height() + 2
+
+
+def test_below_layout_keeps_a_readable_minimum_for_a_narrow_source():
+    _app()
+    font = QFont("Microsoft YaHei UI", 12)
+    item = OcrItem(
+        box=((100, 100), (120, 100), (120, 140), (100, 140)),
+        text="source",
+        confidence=0.99,
+        translation="这是一段会很长很长的译文用来测试窄原文框的下限",
+    )
+    rendered = build_render_items([item], LayoutMode.BELOW, 1920, 1080, 1920, 1080, font)
+    assert rendered[0].rect.width() == MIN_BELOW_WIDTH
 
 
 def test_right_layout_keeps_its_own_width_cap():
