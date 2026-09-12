@@ -1,6 +1,6 @@
 import numpy as np
 from PySide6.QtCore import QPoint
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QFontMetricsF
 from PySide6.QtWidgets import QApplication
 
 from translatorx.models import LayoutMode, OcrItem, WindowInfo
@@ -103,6 +103,50 @@ def test_below_translation_sits_close_to_source():
     )
     rendered = build_render_items([item], LayoutMode.BELOW, 500, 400, 500, 400, QFont())
     assert rendered[0].rect.top() == 135
+
+
+def test_below_layout_follows_the_source_width_past_the_old_cap():
+    _app()
+    item = OcrItem(
+        box=((100, 100), (700, 100), (700, 140), (100, 140)),
+        text="source",
+        confidence=0.99,
+        translation="A translation line that is longer than the old 360 pixel cap allowed",
+    )
+    rendered = build_render_items([item], LayoutMode.BELOW, 1000, 500, 1000, 500, QFont())
+    rect = rendered[0].rect
+    # Wide enough for the 600 px source line, past the old fixed 360 px cap.
+    assert rect.width() >= 600.0
+    assert rect.width() <= 1000 - 8
+    # One line: the source box is wide enough, so nothing wraps.
+    assert rect.height() <= QFontMetricsF(rendered[0].font).height() + 2
+
+
+def test_below_layout_is_bounded_by_the_window_only():
+    _app()
+    item = OcrItem(
+        box=((100, 100), (900, 100), (900, 140), (100, 140)),
+        text="source",
+        confidence=0.99,
+        translation="译文",
+    )
+    rendered = build_render_items([item], LayoutMode.BELOW, 1000, 500, 500, 500, QFont())
+    rect = rendered[0].rect
+    assert rect.width() <= 500 - 8
+    assert rect.left() >= 0
+    assert rect.right() <= 500
+
+
+def test_right_layout_keeps_its_own_width_cap():
+    _app()
+    item = OcrItem(
+        box=((100, 100), (300, 100), (300, 140), (100, 140)),
+        text="source",
+        confidence=0.99,
+        translation="A reasonably long translation that would exceed the right layout cap",
+    )
+    rendered = build_render_items([item], LayoutMode.RIGHT, 1920, 1080, 1920, 1080, QFont())
+    assert rendered[0].rect.width() == 300.0
 
 
 def test_below_translations_avoid_long_wrapped_translation():

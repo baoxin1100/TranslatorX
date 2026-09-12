@@ -132,7 +132,11 @@ def build_render_items(
         metrics = QFontMetricsF(item_font)
         natural_width = metrics.horizontalAdvance(text) + 8.0
         if layout == LayoutMode.BELOW:
-            max_width = min(360.0, window_width - 8.0)
+            # Only the window bounds a below-layout translation. The box is never
+            # painted, so following a wide source box costs nothing visually and
+            # lets a long line reach the source width instead of wrapping at a
+            # fixed 360 px.
+            max_width = window_width - 8.0
             preferred_width = min(max_width, max(48.0, source.width(), natural_width))
             x = source.center().x() - preferred_width / 2.0
             # OCR boxes often include a little extra descent below the glyphs.
