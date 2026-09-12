@@ -106,7 +106,7 @@ jobs:
 
             ## 如果无法下载或下载较慢，可以使用其他下载源
 
-            - **百度网盘：** 待补充
-            - **夸克网盘：** 待补充
+            - **夸克网盘：** https://pan.quark.cn/s/432e4b2e720e?pwd=cag7 （提取码 `cag7`）
+            - **百度网盘：** https://pan.baidu.com/s/13x2SXP3ww8gCaJBm2TOvYQ?pwd=tran （提取码 `tran`）
           files: pyappify_dist/*
           fail_on_unmatched_files: true

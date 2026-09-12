@@ -56,6 +56,15 @@
 
 从 [Releases](https://github.com/baoxin1100/TranslatorX/releases) 下载 `TranslatorX-win32-release-setup.exe`（离线完整包）安装。`TranslatorX-win32-online-setup.exe` 为联网安装器。`win32` 是上游的 Windows 平台标识，不代表应用是 32 位。
 
+如果 GitHub 下载较慢或无法访问，可以使用网盘镜像：
+
+| 来源 | 地址 | 提取码 |
+|---|---|---|
+| 夸克网盘 | https://pan.quark.cn/s/432e4b2e720e?pwd=cag7 | `cag7` |
+| 百度网盘 | https://pan.baidu.com/s/13x2SXP3ww8gCaJBm2TOvYQ?pwd=tran | `tran` |
+
+网盘链接已带 `pwd` 参数，点开一般无需再输入提取码。
+
 ### 源码运行
 
 ```powershell
