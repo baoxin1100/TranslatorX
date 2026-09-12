@@ -27,6 +27,12 @@
   <img src="https://img.shields.io/badge/PP--OCRv5-onnxocr-1A73E8?style=flat-square" alt="PP-OCRv5" />
 </p>
 
+<p align="center">
+  <img src="assets/images/main_page.png" alt="TranslatorX 主界面" width="400" />
+  <br />
+  <sub>主界面：选择目标窗口、翻译引擎与语言，并调整译文层参数</sub>
+</p>
+
 ## 功能特性
 
 | 功能 | 说明 |
@@ -36,6 +42,7 @@
 | 本地 OCR | PP-OCRv5（`onnxocr`）在本机推理，优先 OpenVINO 加速，初始化失败自动回退 ONNX Runtime CPU |
 | 四种翻译引擎 | 百度通用翻译、百度大模型翻译、腾讯云 TMT、任意 OpenAI 兼容接口（`base_url` 与模型名可自填） |
 | 鼠标穿透译文层 | 译文覆盖在目标窗口上方且不拦截鼠标点击，支持原文下方与右侧两种布局，字号 9–28 可调 |
+| 深色 / 浅色主题 | 两套配色共用同一套设计令牌，配置页右上角下拉切换并立即生效；两种主题的正文对比度均满足 WCAG AA |
 | 桌面集成 | F8 全局热键采用低级键盘钩子（游戏独占输入时仍然生效）、系统托盘常驻、内置检查更新与一键唤起更新启动器 |
 
 ## 快速开始
@@ -72,6 +79,7 @@ python run_translatorx.py
 2. 选择翻译引擎、源语言与目标语言；已配置的接口可在设置页测试连通状态与延迟。
 3. 独占全屏游戏无法显示译文时，勾选「目标窗口转非独占全屏」；程序会在进入时自动转换、退出时还原。
 4. 通过「译文布局」「字体大小」「显示延迟」调整译文层，修改立即生效并写入配置。
+5. 在设置页右上角「主题风格」下拉框切换深色 / 浅色主题，立即生效并写入配置；也可直接编辑配置文件中的 `theme`。
 
 ### 运行自检
 
@@ -155,6 +163,7 @@ graph TD
 | `overlay_font_size` | 译文基准字号，范围 9–28 | `12` |
 | `show_latency` | 是否在译文层显示 OCR 与翻译耗时 | `false` |
 | `auto_borderless_fullscreen` | 是否将目标窗口转为无边框全屏 | `false` |
+| `theme` | 界面主题：`dark`（深色）/ `light`（浅色） | `dark` |
 | `window_hwnd` / `window_title` | 上次选择的目标窗口 | — |
 | `TRANSLATORX_*` | 各引擎凭据；密钥以 `_DPAPI` 后缀保存为密文 | — |
 
@@ -186,8 +195,9 @@ translatorx/
 ├── updater.py          # 版本检查：读取远端 tag 并与当前版本比较
 ├── launcher.py         # PyAppify 集成：关闭/唤起启动器、清理启动器快捷方式
 ├── logging_setup.py    # 日志初始化与轮转
+├── theme.py            # 深色 / 浅色主题令牌与样式表生成
 └── models.py           # 数据模型
-assets/                 # 图标与 SVG 资源
+assets/                 # 图标与 SVG 资源（含主界面截图）
 icons/                  # 应用与安装包图标
 scripts/                # OCR 自检与手动验证脚本
 tests/                  # pytest 单元测试
@@ -204,6 +214,7 @@ run_translatorx.py      # 程序入口
 | 技术 | 用途 |
 |---|---|
 | PySide6 (Qt 6) | 主窗口、对话框、译文层控件与托盘 |
+| Qt 样式表 + 调色板 | 由 `theme.py` 的令牌生成深色 / 浅色两套样式，SVG 图标按主题着色 |
 
 ### 识别与图像
 

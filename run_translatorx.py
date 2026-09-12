@@ -9,7 +9,8 @@ from PySide6.QtWidgets import QApplication
 
 from translatorx.launcher import hide_pyappify_launcher
 from translatorx.logging_setup import install_qt_message_handler, setup_logging
-from translatorx.ui import APP_STYLE, MainWindow
+from translatorx.theme import theme_manager
+from translatorx.ui import MainWindow
 from translatorx.windows import enable_per_monitor_dpi_awareness
 
 
@@ -23,7 +24,7 @@ def main() -> int:
     app.setOrganizationName("TranslatorX")
     icon_path = os.path.join(os.path.dirname(__file__), "icons", "icon.ico")
     app.setWindowIcon(QIcon(icon_path))
-    app.setStyleSheet(APP_STYLE)
+    theme_manager.apply()
     window = MainWindow()
     window.show()
     # Run after Qt has processed the first show event. A launcher remains

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from .config_store import app_config
 from .models import TranslatorConfig
+from .theme import theme_choices, theme_manager
 from .translators import create_translator
 
 
@@ -260,6 +261,20 @@ class CredentialDialog(QDialog):
         header_title.setObjectName("settingsDialogTitle")
         header_layout.addWidget(header_title)
         header_layout.addStretch(1)
+        theme_label = QLabel("主题风格")
+        theme_label.setObjectName("fieldLabel")
+        header_layout.addWidget(theme_label)
+        self.theme_combo = QComboBox()
+        self.theme_combo.setObjectName("themeCombo")
+        self.theme_combo.setAccessibleName("界面主题风格")
+        self.theme_combo.setToolTip("切换界面配色，立即生效并保存")
+        for theme_key, theme_name in theme_choices():
+            self.theme_combo.addItem(theme_name, theme_key)
+        current_theme_index = self.theme_combo.findData(theme_manager.key)
+        self.theme_combo.setCurrentIndex(current_theme_index if current_theme_index >= 0 else 0)
+        # Connect last so restoring the saved index does not rewrite the config.
+        self.theme_combo.currentIndexChanged.connect(self._change_theme)
+        header_layout.addWidget(self.theme_combo)
         root.addWidget(header)
         root.addWidget(self._group(
             "百度翻译",
@@ -335,6 +350,11 @@ class CredentialDialog(QDialog):
         footer_layout.addWidget(buttons)
         root.addWidget(footer)
 
+    def _change_theme(self, index: int) -> None:
+        theme_key = self.theme_combo.itemData(index)
+        if theme_key:
+            theme_manager.set_key(str(theme_key))
+
     def _open_about(self) -> None:
         if self._on_about is not None:
             self._on_about()
@@ -373,7 +393,8 @@ class CredentialDialog(QDialog):
 
     @staticmethod
     def _application_link(url: str, text: str) -> QLabel:
-        link = QLabel(f'<a style="color:#5f9fe5;text-decoration:none" href="{url}">{text} ↗</a>')
+        # The colour comes from the palette's Link role so it follows the theme.
+        link = QLabel(f'<a style="text-decoration:none" href="{url}">{text} ↗</a>')
         link.setObjectName("settingsLink")
         link.setOpenExternalLinks(True)
         link.setTextInteractionFlags(

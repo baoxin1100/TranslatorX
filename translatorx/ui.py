@@ -34,6 +34,7 @@ from .updater import REPO_WEB_URL, fetch_latest_version, is_update_available
 from .version import get_app_version
 from .wgc_capture import close_wgc_capture
 from .settings import CredentialDialog
+from .theme import theme_manager, tinted_icon
 from .windows import (
     WindowedState,
     get_window_info,
@@ -45,103 +46,6 @@ from .windows import (
     uninstall_f8_hook,
 )
 from .worker import ProcessingWorker
-
-
-APP_STYLE = """
-QWidget { color: #f3f6f8; font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px; }
-QMainWindow { background: transparent; }
-QWidget#root { background: #090b0f; border-radius: 16px; }
-QFrame#titlebar { background: #090b0f; border-bottom: 1px solid #20252c; border-top-left-radius: 16px; border-top-right-radius: 16px; }
-QFrame#footer { background: #090b0f; border: none; border-bottom-left-radius: 16px; border-bottom-right-radius: 16px; }
-QLabel#windowTitle { font-weight: 700; font-size: 18px; }
-QLabel#settingsDialogTitle { font-weight: 700; font-size: 14px; color: #f3f6f8; }
-QLabel#statusLabel, QLabel#hintLabel { color: #748090; font-size: 12px; }
-QLabel#fieldLabel { color: #a6b0bd; font-weight: 600; }
-QComboBox {
-  min-height: 44px; padding: 0 38px 0 13px; background: #101318;
-  border: 1px solid #20252c; border-radius: 9px; selection-background-color: #24528f;
-}
-QComboBox:hover { border-color: #323a45; background: #15191f; }
-QComboBox:focus { border: 2px solid #4f83c2; padding-left: 12px; }
-QComboBox::drop-down { width: 34px; border: none; }
-QComboBox::down-arrow { image: url(assets/chevron-down.svg); width: 14px; height: 14px; }
-QComboBox QAbstractItemView {
-  background: #101318; border: 1px solid #323a45;
-  selection-background-color: #24528f; selection-color: #ffffff; outline: 0;
-}
-QComboBox QAbstractItemView::item:selected { background: #24528f; color: #ffffff; }
-QPushButton#refreshButton, QToolButton#titleButton, QToolButton#closeButton {
-  background: transparent; border: 1px solid transparent; border-radius: 8px;
-}
-QPushButton#refreshButton { min-width: 44px; max-width: 44px; min-height: 44px; background: #101318; border-color: #20252c; font-size: 18px; }
-QPushButton#refreshButton:hover, QToolButton#titleButton:hover { color: #7ea7d2; background: #15191f; border-color: #323a45; }
-QToolButton#closeButton:hover { color: #ffffff; background: rgba(255,112,112,0.16); border-color: rgba(255,112,112,0.42); }
-QToolButton#titleButton, QToolButton#closeButton { min-width: 30px; max-width: 30px; min-height: 30px; max-height: 30px; }
-QToolButton#titleButton { font-size: 17px; }
-QPushButton#runButton {
-  min-height: 52px; color: white; background: #24528f; border: 1px solid #24528f;
-  border-radius: 10px; font-weight: 700; font-size: 14px;
-}
-QPushButton#runButton:hover { background: #2f66aa; border-color: #2f66aa; }
-QPushButton#runButton:pressed { background: #1d4478; border-color: #1d4478; }
-QPushButton#runButton:disabled {
-  color: #778292; background: #15191f; border-color: #262c35;
-}
-QPushButton#runButton[running="true"] { background: #101318; border-color: rgba(36,82,143,0.7); }
-QDialog { background: #090b0f; }
-QGroupBox { border: 1px solid #20252c; border-radius: 9px; margin-top: 10px; padding-top: 8px; font-weight: 600; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #a6b0bd; }
-QLineEdit { min-height: 36px; padding: 0 10px; background: #101318; border: 1px solid #20252c; border-radius: 7px; }
-QLineEdit:focus { border: 2px solid #4f83c2; }
-QPlainTextEdit#testResults { padding: 8px; background: #07090c; border: 1px solid #20252c; border-radius: 7px; color: #a6b0bd; }
-QPushButton#settingsActionButton { min-height: 34px; padding: 0 14px; color: #dceaff; background: #122038; border: 1px solid #274b78; border-radius: 7px; }
-QPushButton#settingsActionButton:hover { background: #182b49; border-color: #3b6599; }
-QPushButton#settingsActionButton:pressed { background: #0e1a2d; border-color: #4f83c2; }
-QPushButton#settingsActionButton:disabled { color: #748090; background: #101318; border-color: #20252c; }
-QRadioButton { min-height: 34px; spacing: 8px; color: #d7dde5; }
-QRadioButton::indicator { width: 16px; height: 16px; border-radius: 9px; border: 1px solid #4a5665; background: #101318; }
-QRadioButton::indicator:hover { border-color: #4f83c2; }
-QRadioButton::indicator:checked {
-  border-color: #4f83c2;
-  background: qradialgradient(cx:0.5, cy:0.5, radius:0.45, fx:0.5, fy:0.5,
-    stop:0 #4f83c2, stop:0.38 #4f83c2, stop:0.42 #101318, stop:1 #101318);
-}
-QSlider::groove:horizontal { height: 4px; background: #20252c; border-radius: 2px; }
-QSlider::sub-page:horizontal { background: #24528f; border-radius: 2px; }
-QSlider::handle:horizontal { width: 12px; height: 12px; margin: -4px 0; background: #dceaff; border: 2px solid #24528f; border-radius: 6px; }
-QSlider::handle:horizontal:hover { background: #ffffff; border-color: #4f83c2; }
-QLabel#fontValue { min-width: 34px; color: #dceaff; font-weight: 600; }
-QToolButton#infoButton { min-width: 12px; max-width: 12px; min-height: 12px; max-height: 12px;
-  padding: 0; color: #8fa6c0; background: transparent; border: 1px solid #60758d; border-radius: 6px;
-  font-size: 7px; font-weight: 700; }
-QToolButton#infoButton:hover { color: #dceaff; border-color: #4f83c2; background: #122038; }
-QMenu { padding: 6px; background: #101318; border: 1px solid #323a45; border-radius: 7px; }
-QMenu::item { min-width: 126px; padding: 7px 14px; border-radius: 5px; }
-QMenu::item:selected { color: #ffffff; background: #24528f; }
-QDialog#aboutDialog { background: #0d1015; border: 1px solid #323a45; border-radius: 12px; }
-QLabel#aboutTitle { color: #f3f6f8; font-size: 16px; font-weight: 700; }
-QLabel#aboutNote { color: #748090; font-size: 12px; }
-QLabel#aboutStatus { color: #a6b0bd; font-size: 12px; }
-QPushButton#aboutLinkButton, QPushButton#aboutUpdateButton, QPushButton#aboutCloseButton {
-  min-height: 36px; padding: 0 14px; border-radius: 8px; font-weight: 600;
-}
-QPushButton#aboutLinkButton { color: #dceaff; background: #122038; border: 1px solid #274b78; }
-QPushButton#aboutLinkButton:hover { background: #182b49; border-color: #3b6599; }
-QPushButton#aboutLinkButton:pressed { background: #0e1a2d; border-color: #4f83c2; }
-QPushButton#aboutUpgradeButton {
-  min-height: 26px; padding: 0 12px; border-radius: 7px; font-size: 12px; font-weight: 600;
-  color: #ffffff; background: #24528f; border: 1px solid #24528f;
-}
-QPushButton#aboutUpgradeButton:hover { background: #2f66aa; border-color: #2f66aa; }
-QPushButton#aboutUpgradeButton:pressed { background: #1d4478; border-color: #1d4478; }
-QPushButton#aboutUpgradeButton:disabled { color: #778292; background: #15191f; border-color: #262c35; }
-QPushButton#aboutUpdateButton { color: #ffffff; background: #24528f; border: 1px solid #24528f; }
-QPushButton#aboutUpdateButton:hover { background: #2f66aa; border-color: #2f66aa; }
-QPushButton#aboutUpdateButton:pressed { background: #1d4478; border-color: #1d4478; }
-QPushButton#aboutUpdateButton:disabled { color: #778292; background: #15191f; border-color: #262c35; }
-QPushButton#aboutCloseButton { color: #e3e9f0; background: #15191f; border: 1px solid #323a45; }
-QPushButton#aboutCloseButton:hover { color: #ffffff; background: #1c2129; border-color: #4a5665; }
-"""
 
 
 class Switch(QWidget):
@@ -179,19 +83,20 @@ class Switch(QWidget):
         super().keyPressEvent(event)
 
     def paintEvent(self, _event) -> None:  # noqa: N802
+        theme = theme_manager.current()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         track = self.rect().adjusted(1, 4, -1, -4)
-        track_color = QColor("#24528f" if self._checked else "#252b33")
-        border_color = QColor("#4f83c2" if self._checked else "#596572")
+        track_color = QColor(theme.switch_on if self._checked else theme.switch_off)
+        border_color = QColor(theme.switch_border_on if self._checked else theme.switch_border_off)
         painter.setPen(border_color)
         painter.setBrush(track_color)
         painter.drawRoundedRect(track, track.height() / 2, track.height() / 2)
         knob_diameter = track.height() - 6
         knob_x = track.right() - knob_diameter - 3 if self._checked else track.left() + 3
         knob = track.adjusted(knob_x - track.left(), 3, knob_x - track.right() + knob_diameter, -3)
-        painter.setPen(QColor("#f7fbff"))
-        painter.setBrush(QColor("#f7fbff"))
+        painter.setPen(QColor(theme.switch_knob))
+        painter.setBrush(QColor(theme.switch_knob))
         painter.drawEllipse(knob)
         painter.end()
 
@@ -234,8 +139,6 @@ class TitleBar(QFrame):
 
         settings = QToolButton()
         settings.setObjectName("titleButton")
-        settings_icon = Path(__file__).resolve().parent.parent / "assets" / "settings-outline.svg"
-        settings.setIcon(QIcon(str(settings_icon)))
         settings.setIconSize(QSize(17, 17))
         settings.setToolTip("翻译服务设置")
         settings.setAccessibleName("打开翻译服务设置")
@@ -243,8 +146,6 @@ class TitleBar(QFrame):
         layout.addWidget(settings)
         minimize = QToolButton()
         minimize.setObjectName("titleButton")
-        minimize_icon = Path(__file__).resolve().parent.parent / "assets" / "minimize.svg"
-        minimize.setIcon(QIcon(str(minimize_icon)))
         minimize.setIconSize(QSize(17, 17))
         minimize.setToolTip("最小化到系统托盘")
         minimize.setAccessibleName("最小化到系统托盘")
@@ -252,13 +153,23 @@ class TitleBar(QFrame):
         layout.addWidget(minimize)
         close = QToolButton()
         close.setObjectName("closeButton")
-        close_icon = Path(__file__).resolve().parent.parent / "assets" / "close.svg"
-        close.setIcon(QIcon(str(close_icon)))
         close.setIconSize(QSize(17, 17))
         close.setToolTip("关闭程序")
         close.setAccessibleName("关闭 TranslatorX")
         close.clicked.connect(window.close)
         layout.addWidget(close)
+        self._icon_buttons = [
+            (settings, "settings-outline.svg"),
+            (minimize, "minimize.svg"),
+            (close, "close.svg"),
+        ]
+        self.apply_theme()
+
+    def apply_theme(self, theme=None) -> None:
+        """Re-render the title-bar icons in the active theme's colour."""
+        theme = theme or theme_manager.current()
+        for button, asset in self._icon_buttons:
+            button.setIcon(tinted_icon(asset, theme.title_icon))
 
     def set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -471,6 +382,7 @@ class MainWindow(QMainWindow):
         self.credential_dialog = CredentialDialog(self, on_about=self.open_about)
 
         self._build_ui()
+        theme_manager.changed.connect(self._apply_theme)
         self._setup_tray()
         self._restore_main_settings()
         self._start_worker()
@@ -523,6 +435,19 @@ class MainWindow(QMainWindow):
         if removed:
             self._logger.info("已删除启动器快捷方式：%s", "; ".join(removed))
 
+    def _apply_language_icon(self) -> None:
+        theme = theme_manager.current()
+        self.language_direction.setPixmap(
+            tinted_icon("arrow-right.svg", theme.icon_muted, 44).pixmap(22, 22)
+        )
+
+    def _apply_theme(self, _theme=None) -> None:
+        """Repaint the parts a stylesheet cannot reach: SVG icons and custom paint."""
+        self.titlebar.apply_theme()
+        self._apply_language_icon()
+        for switch in self.findChildren(Switch):
+            switch.update()
+
     def _build_ui(self) -> None:
         root = QWidget()
         root.setObjectName("root")
@@ -571,14 +496,13 @@ class MainWindow(QMainWindow):
         languages = QHBoxLayout()
         languages.setSpacing(10)
         languages.addWidget(Field("源语言", self.source_combo), 1)
-        language_direction = QLabel()
-        language_direction.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        arrow_icon = Path(__file__).resolve().parent.parent / "assets" / "arrow-right.svg"
-        language_direction.setPixmap(QIcon(str(arrow_icon)).pixmap(22, 22))
-        language_direction.setFixedWidth(24)
-        language_direction.setContentsMargins(0, 24, 0, 0)
-        language_direction.setAccessibleName("源语言到目标语言")
-        languages.addWidget(language_direction)
+        self.language_direction = QLabel()
+        self.language_direction.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.language_direction.setFixedWidth(24)
+        self.language_direction.setContentsMargins(0, 24, 0, 0)
+        self.language_direction.setAccessibleName("源语言到目标语言")
+        self._apply_language_icon()
+        languages.addWidget(self.language_direction)
         languages.addWidget(Field("目标语言", self.target_combo), 1)
         content.addLayout(languages)
         self.source_combo.currentIndexChanged.connect(self._save_main_settings)
