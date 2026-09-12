@@ -128,6 +128,13 @@ QPushButton#aboutLinkButton, QPushButton#aboutUpdateButton, QPushButton#aboutClo
 QPushButton#aboutLinkButton { color: #dceaff; background: #122038; border: 1px solid #274b78; }
 QPushButton#aboutLinkButton:hover { background: #182b49; border-color: #3b6599; }
 QPushButton#aboutLinkButton:pressed { background: #0e1a2d; border-color: #4f83c2; }
+QPushButton#aboutUpgradeButton {
+  min-height: 26px; padding: 0 12px; border-radius: 7px; font-size: 12px; font-weight: 600;
+  color: #ffffff; background: #24528f; border: 1px solid #24528f;
+}
+QPushButton#aboutUpgradeButton:hover { background: #2f66aa; border-color: #2f66aa; }
+QPushButton#aboutUpgradeButton:pressed { background: #1d4478; border-color: #1d4478; }
+QPushButton#aboutUpgradeButton:disabled { color: #778292; background: #15191f; border-color: #262c35; }
 QPushButton#aboutUpdateButton { color: #ffffff; background: #24528f; border: 1px solid #24528f; }
 QPushButton#aboutUpdateButton:hover { background: #2f66aa; border-color: #2f66aa; }
 QPushButton#aboutUpdateButton:pressed { background: #1d4478; border-color: #1d4478; }
@@ -310,7 +317,7 @@ class AboutDialog(QDialog):
         self.setObjectName("aboutDialog")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setModal(True)
-        self.setFixedSize(430, 250)
+        self.setFixedSize(430, 272)
 
         self.current_version = get_app_version() or "开发版"
         self._pending_version = ""
@@ -332,6 +339,13 @@ class AboutDialog(QDialog):
         self.status_label.setObjectName("aboutStatus")
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
+
+        self.upgrade_button = QPushButton("立即更新")
+        self.upgrade_button.setObjectName("aboutUpgradeButton")
+        self.upgrade_button.setAccessibleName("立即打开更新启动器")
+        self.upgrade_button.clicked.connect(self._request_update)
+        self.upgrade_button.hide()
+        root.addWidget(self.upgrade_button, 0, Qt.AlignmentFlag.AlignLeft)
         root.addStretch(1)
 
         buttons = QHBoxLayout()
@@ -345,7 +359,7 @@ class AboutDialog(QDialog):
         self.update_button = QPushButton("检查更新")
         self.update_button.setObjectName("aboutUpdateButton")
         self.update_button.setAccessibleName("检查是否有新版本")
-        self.update_button.clicked.connect(self._on_update_clicked)
+        self.update_button.clicked.connect(self._check_updates)
         buttons.addWidget(self.update_button)
         buttons.addStretch(1)
 
@@ -359,13 +373,13 @@ class AboutDialog(QDialog):
     def _open_github(self) -> None:
         QDesktopServices.openUrl(QUrl(REPO_WEB_URL))
 
-    def _on_update_clicked(self) -> None:
-        if self._pending_version:
-            self.update_button.setEnabled(False)
-            self.update_requested.emit()
-            self.close()
+    def _request_update(self) -> None:
+        """Open the launcher so it can install the pending version."""
+        if not self._pending_version:
             return
-        self._check_updates()
+        self.upgrade_button.setEnabled(False)
+        self.update_requested.emit()
+        self.close()
 
     def _check_updates(self) -> None:
         if self._check_thread is not None and self._check_thread.isRunning():
@@ -388,22 +402,23 @@ class AboutDialog(QDialog):
 
     def _on_checked(self, ok: bool, latest: str, error: str) -> None:
         self.update_button.setEnabled(True)
+        self.update_button.setText("检查更新")
+        self._pending_version = ""
+        self.upgrade_button.hide()
+        self.upgrade_button.setEnabled(True)
         if not ok:
             self.status_label.setText(f"检查更新失败：{error or '未知错误'}")
-            self.update_button.setText("检查更新")
             return
         if not latest:
             self.status_label.setText("未能获取远端版本信息，请稍后再试。")
-            self.update_button.setText("检查更新")
             return
         if is_update_available(latest, self.current_version):
             self._pending_version = latest
             self.status_label.setText(f"发现新版本：当前 {self.current_version} → 最新 {latest}")
-            self.update_button.setText("立刻更新")
-            self.update_button.setAccessibleName(f"立刻更新到 {latest}")
+            self.upgrade_button.setAccessibleName(f"立即更新到 {latest}")
+            self.upgrade_button.show()
         else:
             self.status_label.setText(f"当前已是最新版本（{self.current_version}）")
-            self.update_button.setText("检查更新")
 
 
 class MainWindow(QMainWindow):
