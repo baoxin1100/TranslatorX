@@ -153,6 +153,69 @@ def should_translate_text(text: str) -> bool:
     return True
 
 
+def format_latency(timing: dict[str, float]) -> str:
+    """Render the per-frame pipeline breakdown for the overlay.
+
+    Every stage that can add latency is listed, including the ones outside the
+    OCR call itself: the wait for the capture tick, the capture backend, the
+    hand-off between threads, the text cleanup and the final render.
+    """
+    def value(key: str) -> float:
+        try:
+            return float(timing.get(key, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    ocr_ms = value("ocr_ms")
+    det_ms = value("det_ms")
+    rec_ms = value("rec_ms")
+    prepare_ms = max(0.0, ocr_ms - det_ms - rec_ms)
+    capture_ms = value("capture_ms")
+    wgc_ms = value("capture_wgc_ms")
+    fallback_ms = value("capture_fallback_ms")
+    render_ms = value("render_ms")
+    # Sum of the measured worker stages; anything the stages do not cover stays
+    # visible as the remainder of the round trip.
+    work_ms = (
+        value("dispatch_ms") + ocr_ms + value("clean_ms") + value("cache_ms") + value("translation_ms")
+    )
+    roundtrip_ms = value("roundtrip_ms")
+    wait_ms = value("wait_ms")
+    callback_ms = value("callback_ms")
+    other_ms = max(0.0, roundtrip_ms - capture_ms - work_ms - callback_ms - render_ms)
+
+    capture_text = f"截图 {capture_ms:.0f}"
+    if wgc_ms or fallback_ms:
+        capture_text += f"（WGC {wgc_ms:.0f} / 兜底 {fallback_ms:.0f}）"
+
+    line1 = (
+        f"等待 {wait_ms:.0f} · {capture_text} · 派发 {value('dispatch_ms'):.0f} · "
+        f"OCR {ocr_ms:.0f}（预处理 {prepare_ms:.0f} / 检测 {det_ms:.0f} / 识别 {rec_ms:.0f}）"
+    )
+    line2 = (
+        f"清洗 {value('clean_ms'):.0f} · 装配 {value('cache_ms'):.0f} · "
+        f"翻译 {value('translation_ms'):.0f} · 回调 {callback_ms:.0f} · 渲染 {render_ms:.0f}"
+    )
+    parts = [
+        f"截图 {capture_ms:.0f}",
+        f"处理 {work_ms:.0f}",
+        f"回调 {callback_ms:.0f}",
+        f"渲染 {render_ms:.0f}",
+    ]
+    if other_ms >= 1.0:
+        parts.append(f"其他 {other_ms:.0f}")
+    # The round trip starts at the capture and ends when the overlay is drawn;
+    # the wait for the next capture tick happens before it and only adds to the
+    # refresh period, so the two are reported separately.
+    line3 = f"单帧往返 {roundtrip_ms:.0f} ms = " + " + ".join(parts)
+    if value("skipped_ticks"):
+        line3 += f" · 跳过 {int(value('skipped_ticks'))} 次截拍"
+    line4 = (
+        f"刷新周期 {roundtrip_ms + wait_ms:.0f} ms = 等待 {wait_ms:.0f} + 往返 {roundtrip_ms:.0f}"
+    )
+    return "\n".join((line1, line2, line3, line4))
+
+
 class ProcessingWorker(QObject):
     ready = Signal()
     completed = Signal(object, int, int)
@@ -233,6 +296,16 @@ class ProcessingWorker(QObject):
         try:
             config = TranslatorConfig.from_dict(raw_config)
             capture_ms = float(raw_config.get("_capture_ms", 0.0) or 0.0)
+            common_timing = {
+                "capture_ms": capture_ms,
+                "wait_ms": float(raw_config.get("_wait_ms", 0.0) or 0.0),
+                "skipped_ticks": float(raw_config.get("_skipped_ticks", 0) or 0),
+                "capture_wgc_ms": float(raw_config.get("_capture_wgc_ms", 0.0) or 0.0),
+                "capture_fallback_ms": float(raw_config.get("_capture_fallback_ms", 0.0) or 0.0),
+                "dispatch_ms": max(
+                    0.0, (started_at - float(raw_config.get("_emit_at", started_at) or started_at)) * 1000.0
+                ),
+            }
             ocr_started = time.perf_counter()
             self._logger.info("开始 OCR：source_shape=%s", getattr(image_bgr, "shape", None))
             items, ocr_parts = self._recognize(image_bgr)
@@ -250,19 +323,21 @@ class ProcessingWorker(QObject):
             items = [item for item in items if should_translate_text(item.text)]
             before_group_count = len(items)
             items = group_translation_items(items)
+            clean_ms = (time.perf_counter() - postprocess_started) * 1000.0
             if len(items) != before_group_count:
                 self._logger.info("合并连续文本：%s -> %s 个翻译单元", before_group_count, len(items))
             if not items:
                 self.completed.emit([], image_bgr.shape[1], image_bgr.shape[0])
                 self.timing.emit({
-                    "capture_ms": capture_ms,
+                    **common_timing,
                     "ocr_ms": ocr_ms,
                     "det_ms": float(ocr_parts.get("det_ms", 0.0)),
                     "rec_ms": float(ocr_parts.get("rec_ms", 0.0)),
                     "analysis_width": float(ocr_parts.get("analysis_width", image_bgr.shape[1])),
                     "analysis_height": float(ocr_parts.get("analysis_height", image_bgr.shape[0])),
+                    "clean_ms": clean_ms,
+                    "cache_ms": 0.0,
                     "translation_ms": 0.0,
-                    "postprocess_ms": (time.perf_counter() - postprocess_started) * 1000.0,
                     "total_ms": capture_ms + (time.perf_counter() - started_at) * 1000.0,
                 })
                 return
@@ -286,23 +361,22 @@ class ProcessingWorker(QObject):
             else:
                 translation_ms = 0.0
 
+            cache_started = time.perf_counter()
             translated_items: list[OcrItem] = []
             for item in items:
                 key = (config.engine, config.source_language, config.target_language, item.text)
                 translated_items.append(replace(item, translation=self._cache.get(key, "")))
-            postprocess_ms = max(
-                0.0,
-                (time.perf_counter() - postprocess_started) * 1000.0 - translation_ms,
-            )
+            cache_ms = (time.perf_counter() - cache_started) * 1000.0
             self.timing.emit({
-                "capture_ms": capture_ms,
+                **common_timing,
                 "ocr_ms": ocr_ms,
                 "det_ms": float(ocr_parts.get("det_ms", 0.0)),
                 "rec_ms": float(ocr_parts.get("rec_ms", 0.0)),
                 "analysis_width": float(ocr_parts.get("analysis_width", image_bgr.shape[1])),
                 "analysis_height": float(ocr_parts.get("analysis_height", image_bgr.shape[0])),
+                "clean_ms": clean_ms,
+                "cache_ms": cache_ms,
                 "translation_ms": translation_ms,
-                "postprocess_ms": postprocess_ms,
                 "total_ms": capture_ms + (time.perf_counter() - started_at) * 1000.0,
             })
             self.completed.emit(translated_items, image_bgr.shape[1], image_bgr.shape[0])

@@ -1,6 +1,10 @@
 import ctypes
+from ctypes import wintypes
+
+import pytest
 
 import translatorx.windows as windows
+from translatorx.models import WindowInfo
 
 
 def signed_handle(hwnd) -> int:
@@ -331,3 +335,239 @@ def test_cross_process_raise_checks_actual_order_and_clears_topmost(monkeypatch)
     assert windows.place_overlay_above_target(200, 100)
     assert native.chain == [400, 200, 100]
     assert 200 not in native.topmost
+
+
+def _raw(handle) -> int:
+    """Win32 fakes receive either an int or a ctypes handle, depending on caller."""
+    return int(handle.value) if hasattr(handle, "value") else int(handle)
+
+
+class FakePopupDesktop:
+    """EnumWindows desktop with owner chains, processes and popup styles."""
+
+    def __init__(self, windows_in_order, owners=None, processes=None, styles=None, titles=None,
+                 rects=None, invisible=()):
+        self.order = list(windows_in_order)
+        self.owners = dict(owners or {})
+        self.processes = dict(processes or {})
+        self.styles = dict(styles or {})
+        self.titles = dict(titles or {})
+        self.rects = dict(rects or {})
+        self.invisible = set(invisible)
+
+    def EnumWindows(self, callback, _lparam):
+        for hwnd in self.order:
+            # Win32 hands the callback a handle and stops the walk on a false return.
+            if not callback(wintypes.HWND(hwnd), 0):
+                break
+        return 1
+
+    def IsWindowVisible(self, hwnd):
+        return _raw(hwnd) not in self.invisible
+
+    def IsWindow(self, hwnd):
+        return _raw(hwnd) in self.order
+
+    def GetWindowLongW(self, hwnd, index):
+        assert index == windows.GWL_STYLE
+        return self.styles.get(_raw(hwnd), 0)
+
+    def GetWindow(self, hwnd, command):
+        assert command.value == windows.GW_OWNER
+        return self.owners.get(_raw(hwnd), 0)
+
+    def GetWindowThreadProcessId(self, hwnd, pointer):
+        pointer._obj.value = self.processes.get(_raw(hwnd), 0)
+        return 1
+
+    def GetWindowTextLengthW(self, hwnd):
+        return len(self.titles.get(_raw(hwnd), ""))
+
+    def GetWindowTextW(self, hwnd, buffer, _length):
+        text = self.titles.get(_raw(hwnd), "")
+        buffer.value = text
+        return len(text)
+
+    def GetWindowRect(self, hwnd, pointer):
+        left, top, right, bottom = self.rects[_raw(hwnd)]
+        pointer._obj.left, pointer._obj.top = left, top
+        pointer._obj.right, pointer._obj.bottom = right, bottom
+        return 1
+
+    def GetClientRect(self, hwnd, pointer):
+        left, top, right, bottom = self.rects[_raw(hwnd)]
+        pointer._obj.left, pointer._obj.top = 0, 0
+        pointer._obj.right, pointer._obj.bottom = right - left, bottom - top
+        return 1
+
+    def ClientToScreen(self, hwnd, pointer):
+        left, top, _, _ = self.rects[_raw(hwnd)]
+        pointer._obj.x += left
+        pointer._obj.y += top
+        return 1
+
+
+@pytest.fixture(autouse=True)
+def _no_dwm_cloaking(monkeypatch):
+    monkeypatch.setattr(windows, "dwmapi", None)
+
+
+TARGET = 100
+MENU = 200
+OTHER_APP_WINDOW = 300
+
+
+def _menu_desktop(*, menu_owner=0, menu_process=7, menu_style=windows.WS_POPUP, menu_title="python",
+                  menu_rect=(40, 40, 300, 360)):
+    return FakePopupDesktop(
+        windows_in_order=[MENU, TARGET, OTHER_APP_WINDOW],
+        owners={MENU: menu_owner},
+        processes={MENU: menu_process, TARGET: 7, OTHER_APP_WINDOW: 9},
+        styles={MENU: menu_style, TARGET: 0x00CF0000, OTHER_APP_WINDOW: 0x00CF0000},
+        titles={MENU: menu_title, TARGET: "game", OTHER_APP_WINDOW: "browser"},
+        rects={TARGET: (0, 0, 800, 600), OTHER_APP_WINDOW: (0, 0, 800, 600), MENU: menu_rect},
+    )
+
+
+def test_owned_menu_is_followed(monkeypatch):
+    monkeypatch.setattr(windows, "user32", _menu_desktop(menu_owner=TARGET))
+    popup = windows.find_target_popup(TARGET)
+    assert popup is not None
+    assert popup.hwnd == MENU
+
+
+def test_owned_popup_is_followed_through_a_nested_owner(monkeypatch):
+    desktop = _menu_desktop(menu_owner=MENU + 1)
+    desktop.owners[MENU + 1] = TARGET
+    desktop.styles[MENU + 1] = 0
+    desktop.rects[MENU + 1] = (10, 10, 100, 100)
+    desktop.order.insert(1, MENU + 1)
+    monkeypatch.setattr(windows, "user32", desktop)
+    assert windows.find_target_popup(TARGET).hwnd == MENU
+
+
+def test_ownerless_popup_in_the_same_process_is_followed(monkeypatch):
+    # Qt opens a combo box drop-down with no Win32 owner and keeps the app title.
+    monkeypatch.setattr(windows, "user32", _menu_desktop(menu_owner=0))
+    popup = windows.find_target_popup(TARGET)
+    assert popup is not None
+    assert popup.hwnd == MENU
+    assert popup.title == "python"
+
+
+def test_ownerless_window_of_another_process_is_ignored(monkeypatch):
+    monkeypatch.setattr(windows, "user32", _menu_desktop(menu_owner=0, menu_process=9))
+    assert windows.find_target_popup(TARGET) is None
+
+
+def test_framed_window_of_the_same_process_is_not_a_popup(monkeypatch):
+    # A caption or a resize frame means an application window, not a popup.
+    monkeypatch.setattr(
+        windows,
+        "user32",
+        _menu_desktop(menu_owner=0, menu_style=windows.WS_POPUP | windows.WS_CAPTION),
+    )
+    assert windows.find_target_popup(TARGET) is None
+
+
+def test_ownerless_popup_below_the_target_is_ignored(monkeypatch):
+    desktop = _menu_desktop(menu_owner=0)
+    desktop.order = [TARGET, MENU, OTHER_APP_WINDOW]
+    monkeypatch.setattr(windows, "user32", desktop)
+    assert windows.find_target_popup(TARGET) is None
+
+
+def test_child_window_is_not_a_popup(monkeypatch):
+    monkeypatch.setattr(
+        windows, "user32", _menu_desktop(menu_owner=TARGET, menu_style=windows.WS_CHILD)
+    )
+    assert windows.find_target_popup(TARGET) is None
+
+
+def test_popup_without_target_overlap_is_ignored(monkeypatch):
+    monkeypatch.setattr(
+        windows, "user32", _menu_desktop(menu_owner=0, menu_rect=(2000, 2000, 2400, 2400))
+    )
+    assert windows.find_target_popup(TARGET) is None
+
+
+def test_tiny_popup_is_ignored(monkeypatch):
+    monkeypatch.setattr(
+        windows, "user32", _menu_desktop(menu_owner=TARGET, menu_rect=(10, 10, 20, 16))
+    )
+    assert windows.find_target_popup(TARGET) is None
+
+
+def test_invisible_popup_is_ignored(monkeypatch):
+    desktop = _menu_desktop(menu_owner=TARGET)
+    desktop.invisible.add(MENU)
+    monkeypatch.setattr(windows, "user32", desktop)
+    assert windows.find_target_popup(TARGET) is None
+
+
+def test_excluded_windows_are_not_followed(monkeypatch):
+    monkeypatch.setattr(windows, "user32", _menu_desktop(menu_owner=TARGET))
+    assert windows.find_target_popup(TARGET, exclude_hwnds={MENU}) is None
+
+
+def test_topmost_popup_wins(monkeypatch):
+    desktop = _menu_desktop(menu_owner=TARGET)
+    nested = 400
+    desktop.order.insert(0, nested)
+    desktop.owners[nested] = TARGET
+    desktop.rects[nested] = (60, 60, 260, 200)
+    desktop.processes[nested] = 7
+    desktop.titles[nested] = ""
+    desktop.styles[nested] = windows.WS_POPUP
+    monkeypatch.setattr(windows, "user32", desktop)
+    assert windows.find_target_popup(TARGET).hwnd == nested
+
+
+class _Finder:
+    def __init__(self, popups):
+        self.popups = list(popups)
+        self.calls = []
+
+    def __call__(self, hwnd, exclude_hwnds=None):
+        self.calls.append((hwnd, set(exclude_hwnds or ())))
+        return self.popups[0] if self.popups else None
+
+
+def test_popup_follower_reports_only_real_switches(monkeypatch):
+    target = WindowInfo(TARGET, "game", 0, 0, 800, 600)
+    menu = WindowInfo(MENU, "", 40, 40, 260, 320)
+    finder = _Finder([menu])
+    monkeypatch.setattr(windows, "find_target_popup", finder)
+    follower = windows.PopupFollower()
+
+    assert follower.active(target) is target
+    assert follower.update(target, exclude_hwnds={1}) is True
+    assert follower.active(target) is menu
+    assert follower.hwnd == MENU
+    # The same popup is not a switch, even though its rectangle keeps changing.
+    assert follower.update(target, exclude_hwnds={1}) is False
+    assert finder.calls[-1] == (TARGET, {1})
+
+    finder.popups = []
+    assert follower.update(target) is True
+    assert follower.active(target) is target
+    assert follower.hwnd == 0
+
+
+def test_popup_follower_survives_a_failing_lookup(monkeypatch):
+    target = WindowInfo(TARGET, "game", 0, 0, 800, 600)
+    monkeypatch.setattr(
+        windows, "find_target_popup", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("boom"))
+    )
+    follower = windows.PopupFollower()
+    follower.update(target)
+    assert follower.window is None
+    assert follower.active(target) is target
+
+
+def test_popup_follower_drops_the_popup_when_the_target_closes():
+    follower = windows.PopupFollower()
+    follower.window = WindowInfo(MENU, "", 0, 0, 100, 100)
+    assert follower.update(None) is True
+    assert follower.update(None) is False
+    assert follower.active(None) is None

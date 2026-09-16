@@ -46,6 +46,12 @@ WS_THICKFRAME = 0x00040000
 WS_MINIMIZEBOX = 0x00020000
 WS_MAXIMIZEBOX = 0x00010000
 WS_SYSMENU = 0x00080000
+WS_POPUP = 0x80000000
+WS_CHILD = 0x40000000
+GW_OWNER = 4
+POPUP_MIN_WIDTH = 24
+POPUP_MIN_HEIGHT = 16
+POPUP_OWNER_DEPTH = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +119,8 @@ user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
 user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
 user32.GetWindow.restype = wintypes.HWND
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
 user32.MonitorFromWindow.restype = wintypes.HMONITOR
 user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW)]
@@ -231,6 +239,153 @@ def is_target_foreground(hwnd: int) -> bool:
     if foreground == hwnd:
         return True
     return int(user32.GetAncestor(foreground, GA_ROOTOWNER) or 0) == hwnd
+
+
+def _window_process_id(hwnd: int) -> int:
+    process = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(process))
+    return int(process.value)
+
+
+def _window_style(hwnd: int) -> int:
+    return int(user32.GetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE))
+
+
+def _window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+        return None
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+def _rects_overlap(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> bool:
+    return (
+        first[0] < second[2]
+        and second[0] < first[2]
+        and first[1] < second[3]
+        and second[1] < first[3]
+    )
+
+
+def _is_owned_by(window: int, target: int) -> bool:
+    """Walk the Win32 owner chain from ``window`` looking for ``target``."""
+    current = window
+    for _ in range(POPUP_OWNER_DEPTH):
+        owner = int(user32.GetWindow(wintypes.HWND(current), wintypes.UINT(GW_OWNER)) or 0)
+        if not owner:
+            return False
+        if owner == target:
+            return True
+        current = owner
+    return False
+
+
+def _is_ownerless_popup(
+    window: int,
+    style: int,
+    process_ids: set[int],
+    target_bounds: tuple[int, int, int, int] | None,
+) -> bool:
+    """Match the toolkits that create popups without a Win32 owner.
+
+    Qt, for example, opens a combo box drop-down as a visible ``WS_POPUP``
+    window with no owner and no frame -- it even keeps the application title,
+    so the title cannot be used to tell it apart. What does tell it apart is
+    being chrome-less, in the target's process, and overlapping the target: a
+    window with a caption or a resize frame is an application window instead.
+    """
+    if not style & WS_POPUP or style & WS_CHILD:
+        return False
+    if style & (WS_CAPTION | WS_THICKFRAME):
+        return False
+    if target_bounds is None or _window_process_id(window) not in process_ids:
+        return False
+    bounds = _window_rect(window)
+    return bounds is not None and _rects_overlap(bounds, target_bounds)
+
+
+def find_target_popup(hwnd: int, exclude_hwnds: set[int] | None = None) -> WindowInfo | None:
+    """Return the topmost popup that belongs to ``hwnd``, if one is open.
+
+    Menus, combo box drop-downs, tooltips and dialogs are top-level windows of
+    their own, so they never appear in a window capture of ``hwnd``. They belong
+    to the target either through the Win32 owner chain or, for toolkits that do
+    not set an owner, by being a chrome-less top-level window of the same
+    process over it. ``EnumWindows`` walks the Z order, so the first match is the
+    topmost popup, and a window that is only found below the target cannot be
+    covering it.
+    """
+    if not hwnd:
+        return None
+    excluded = set(exclude_hwnds or ())
+    excluded.add(hwnd)
+    process_ids = {_window_process_id(hwnd)}
+    target_bounds = _window_rect(hwnd)
+    found: list[WindowInfo] = []
+    passed_target = False
+
+    @WNDENUMPROC
+    def callback(window: int, _lparam: int) -> bool:
+        nonlocal passed_target
+        value = int(window)
+        if value == hwnd:
+            passed_target = True
+            return True
+        if value in excluded or not user32.IsWindowVisible(window):
+            return True
+        if _is_cloaked(value):
+            return True
+        style = _window_style(value)
+        if style & WS_CHILD:
+            return True
+        if not _is_owned_by(value, hwnd):
+            if passed_target or not _is_ownerless_popup(
+                value, style, process_ids, target_bounds
+            ):
+                return True
+        bounds = _window_rect(value)
+        if bounds is None:
+            return True
+        if bounds[2] - bounds[0] < POPUP_MIN_WIDTH or bounds[3] - bounds[1] < POPUP_MIN_HEIGHT:
+            return True
+        info = get_window_info(value)
+        if info is None:
+            return True
+        found.append(info)
+        return False
+
+    user32.EnumWindows(callback, 0)
+    return found[0] if found else None
+
+
+class PopupFollower:
+    """Keeps track of the popup the capture should follow instead of the target."""
+
+    def __init__(self) -> None:
+        self.window: WindowInfo | None = None
+
+    @property
+    def hwnd(self) -> int:
+        return self.window.hwnd if self.window is not None else 0
+
+    def active(self, target: WindowInfo | None) -> WindowInfo | None:
+        """The window to capture right now: the popup while one is open."""
+        return self.window or target
+
+    def update(self, target: WindowInfo | None, exclude_hwnds: set[int] | None = None) -> bool:
+        """Refresh the followed popup. Returns True when the captured window changed."""
+        if target is None:
+            changed = self.window is not None
+            self.window = None
+            return changed
+        try:
+            popup = find_target_popup(target.hwnd, exclude_hwnds=exclude_hwnds)
+        except Exception:
+            _logger.exception("查找目标窗口弹窗失败：hwnd=%s", target.hwnd)
+            popup = None
+        changed = (popup.hwnd if popup is not None else 0) != self.hwnd
+        self.window = popup
+        return changed
 
 
 _f8_hook_handle = None

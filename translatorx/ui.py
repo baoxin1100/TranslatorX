@@ -36,6 +36,7 @@ from .wgc_capture import close_wgc_capture
 from .settings import CredentialDialog
 from .theme import theme_manager, tinted_icon
 from .windows import (
+    PopupFollower,
     WindowedState,
     get_window_info,
     install_f8_hook,
@@ -45,7 +46,7 @@ from .windows import (
     restore_windowed_state,
     uninstall_f8_hook,
 )
-from .worker import ProcessingWorker
+from .worker import ProcessingWorker, format_latency
 
 
 class Switch(QWidget):
@@ -370,10 +371,18 @@ class MainWindow(QMainWindow):
         self._last_image_size = (0, 0)
         self._last_timing: dict[str, float] = {}
         self._capture_started_at = 0.0
+        self._frame_started_at = 0.0
+        self._last_render_at = 0.0
+        self._wait_ms = 0.0
+        self._skipped_ticks = 0
         self._debug_capture_saved = False
         self._discard_worker_result = False
         self._refreshing_windows = False
         self._selected_window: WindowInfo | None = None
+        # Menus and drop-downs are separate top-level windows, so the capture
+        # follows the target's current popup while one is open.
+        self._popup = PopupFollower()
+        self._pending_hwnd = 0
         self._borderless_state: WindowedState | None = None
         self._borderless_hwnd = 0
         self._f8_registered = False
@@ -747,9 +756,10 @@ class MainWindow(QMainWindow):
     def _refresh_overlay_layout(self, checked: bool) -> None:
         if not checked or not self._running or self._selected_window is None or not self._last_items:
             return
-        if is_target_foreground(self._selected_window.hwnd):
+        window = self._active_window()
+        if window is not None and is_target_foreground(self._selected_window.hwnd):
             self.overlay.update_content(
-                self._selected_window,
+                window,
                 self._last_items,
                 self._layout_mode(),
                 *self._last_image_size,
@@ -817,12 +827,32 @@ class MainWindow(QMainWindow):
         timing = self._last_timing
         if not timing:
             return
-        text = (
-            f"OCR {timing.get('ocr_ms', 0.0):.0f} ms（检测 {timing.get('det_ms', 0.0):.0f} / 识别 {timing.get('rec_ms', 0.0):.0f}）  ·  "
-            f"翻译 {timing.get('translation_ms', 0.0):.0f} ms  ·  "
-            f"总计 {timing.get('total_ms', 0.0):.0f} ms"
+        self.overlay.set_latency_text(format_latency(timing))
+
+    def _log_frame_timing(self) -> None:
+        timing = self._last_timing
+        if not timing:
+            return
+        self._logger.info(
+            "帧延迟：等待=%.0f 截图=%.0f(WGC %.0f/兜底 %.0f) 派发=%.0f OCR=%.0f(预处理 %.0f/检测 %.0f/识别 %.0f) "
+            "清洗=%.0f 装配=%.0f 翻译=%.0f 回调=%.0f 渲染=%.0f 往返=%.0f 跳过=%d",
+            timing.get("wait_ms", 0.0),
+            timing.get("capture_ms", 0.0),
+            timing.get("capture_wgc_ms", 0.0),
+            timing.get("capture_fallback_ms", 0.0),
+            timing.get("dispatch_ms", 0.0),
+            timing.get("ocr_ms", 0.0),
+            max(0.0, timing.get("ocr_ms", 0.0) - timing.get("det_ms", 0.0) - timing.get("rec_ms", 0.0)),
+            timing.get("det_ms", 0.0),
+            timing.get("rec_ms", 0.0),
+            timing.get("clean_ms", 0.0),
+            timing.get("cache_ms", 0.0),
+            timing.get("translation_ms", 0.0),
+            timing.get("callback_ms", 0.0),
+            timing.get("render_ms", 0.0),
+            timing.get("roundtrip_ms", 0.0),
+            int(timing.get("skipped_ticks", 0)),
         )
-        self.overlay.set_latency_text(text)
 
     def toggle_running(self) -> None:
         if not self.run_button.isEnabled():
@@ -845,6 +875,11 @@ class MainWindow(QMainWindow):
         self._last_timing = {}
         self._empty_frame_count = 0
         self._debug_capture_saved = False
+        self._popup.update(None)
+        self._pending_hwnd = 0
+        self._last_render_at = 0.0
+        self._wait_ms = 0.0
+        self._skipped_ticks = 0
         if not self._worker_busy:
             self._discard_worker_result = False
         self._selected_window = target
@@ -904,10 +939,15 @@ class MainWindow(QMainWindow):
         close_wgc_capture()
         if self._worker_busy:
             self._discard_worker_result = True
+        self._popup.update(None)
+        self._pending_hwnd = 0
         self._empty_frame_count = 0
         self._last_items = []
         self._last_image_size = (0, 0)
         self._last_timing = {}
+        self._last_render_at = 0.0
+        self._wait_ms = 0.0
+        self._skipped_ticks = 0
         self.track_timer.stop()
         self.capture_timer.stop()
         self.overlay.clear()
@@ -922,37 +962,96 @@ class MainWindow(QMainWindow):
         self.titlebar.set_status("已就绪")
         self._save_main_settings()
 
+    def _active_window(self) -> WindowInfo | None:
+        """The window being captured: the target, or its popup while one is open."""
+        return self._popup.active(self._selected_window)
+
     def _track_target(self) -> None:
         if not self._running or self._selected_window is None:
             return
         target = get_window_info(self._selected_window.hwnd)
         if target is None:
+            self._popup.update(None)
             self.titlebar.set_status("目标窗口已关闭")
             self._stop()
             self.refresh_windows()
             return
         self._selected_window = target
+        if self._follow_popup(target):
+            return
         self._logger.debug("跟踪目标窗口：hwnd=%s client=(%s,%s,%sx%s)", target.hwnd, target.left, target.top, target.width, target.height)
-        self.overlay.sync_target_z_order(target.hwnd)
+        active = self._active_window()
+        if active is None:
+            return
+        self.overlay.sync_target_z_order(active.hwnd)
         self.titlebar.set_status(
             "翻译运行中" if is_target_foreground(target.hwnd) else "目标窗口位于后台"
         )
         if self._last_items and not self.overlay.isVisible():
             self.overlay.update_content(
-                target,
+                active,
                 self._last_items,
                 self._layout_mode(),
                 *self._last_image_size,
             )
 
+    def _follow_popup(self, target: WindowInfo) -> bool:
+        """Switch capture to the target's popup, or back once it closes.
+
+        Returns True when the followed window changed and a fresh capture was
+        scheduled, so the caller must not render the previous window's items.
+        """
+        try:
+            changed = self._popup.update(
+                target,
+                exclude_hwnds={int(self.winId()), int(self.overlay.winId())},
+            )
+        except Exception:
+            self._logger.exception("跟踪目标窗口弹窗失败")
+            return False
+        if not changed:
+            return False
+        follow = self._popup.window
+        if follow is None:
+            self._logger.info("弹窗已关闭，回到目标窗口：hwnd=%s", target.hwnd)
+        else:
+            self._logger.info(
+                "跟随目标窗口弹窗：hwnd=%s title=%r client=(%s,%s,%sx%s)",
+                follow.hwnd,
+                follow.title,
+                follow.left,
+                follow.top,
+                follow.width,
+                follow.height,
+            )
+        # Coordinates from the previous window would be drawn over the new one.
+        self._last_items = []
+        self._last_image_size = (0, 0)
+        self._empty_frame_count = 0
+        self.overlay.clear()
+        if not self._worker_busy:
+            QTimer.singleShot(0, self._capture)
+        return True
+
     def _capture(self) -> None:
-        if not self._running or self._worker_busy or self._selected_window is None:
+        if not self._running or self._worker_busy:
+            # A busy worker drops this tick; the wait for the next one belongs to
+            # the next frame's latency, so count it for the breakdown.
+            if self._running:
+                self._skipped_ticks += 1
+            return
+        window = self._active_window()
+        if window is None:
             return
         try:
-            self._capture_started_at = time.perf_counter()
-            self._logger.info("开始截图：hwnd=%s rect=(%s,%s,%sx%s)", self._selected_window.hwnd, self._selected_window.left, self._selected_window.top, self._selected_window.width, self._selected_window.height)
-            image = capture_window_bgr(self._selected_window, int(self.overlay.winId()))
-            capture_ms = (time.perf_counter() - self._capture_started_at) * 1000.0
+            frame_started_at = time.perf_counter()
+            self._capture_started_at = frame_started_at
+            if self._last_render_at:
+                self._wait_ms = max(0.0, (frame_started_at - self._last_render_at) * 1000.0)
+            self._logger.info("开始截图：hwnd=%s rect=(%s,%s,%sx%s)", window.hwnd, window.left, window.top, window.width, window.height)
+            capture_timings: dict[str, float] = {}
+            image = capture_window_bgr(window, int(self.overlay.winId()), capture_timings)
+            capture_ms = (time.perf_counter() - frame_started_at) * 1000.0
             if not self._debug_capture_saved:
                 try:
                     import cv2
@@ -977,9 +1076,17 @@ class MainWindow(QMainWindow):
             self.titlebar.set_status(str(exc))
             return
         self._worker_busy = True
+        self._pending_hwnd = window.hwnd
         config = self._config().to_dict()
         config["_capture_ms"] = capture_ms
+        config["_capture_wgc_ms"] = capture_timings.get("capture_wgc_ms", 0.0)
+        config["_capture_fallback_ms"] = capture_timings.get("capture_fallback_ms", 0.0)
+        config["_wait_ms"] = self._wait_ms
+        config["_skipped_ticks"] = self._skipped_ticks
+        self._skipped_ticks = 0
+        self._frame_started_at = frame_started_at
         self._logger.info("提交 OCR 帧：capture_ms=%.1f", capture_ms)
+        config["_emit_at"] = time.perf_counter()
         self.process_requested.emit(image, config)
 
     def _on_timing(self, timing: dict) -> None:
@@ -989,13 +1096,24 @@ class MainWindow(QMainWindow):
     def _on_processed(self, items: list, image_width: int, image_height: int) -> None:
         self._logger.info("收到处理结果：items=%s image=%sx%s", len(items), image_width, image_height)
         self._worker_busy = False
+        render_entered_at = time.perf_counter()
         if self._discard_worker_result:
             self._discard_worker_result = False
             self._logger.info("丢弃上一运行会话的迟到 OCR 结果")
             if self._running:
                 QTimer.singleShot(0, self._capture)
             return
-        if not self._running or self._selected_window is None:
+        if not self._running:
+            return
+        window = self._active_window()
+        if window is None:
+            return
+        if self._pending_hwnd and self._pending_hwnd != window.hwnd:
+            # The popup opened or closed while this frame was in flight; its
+            # coordinates belong to the window the overlay no longer covers.
+            self._logger.info("丢弃已切换窗口的 OCR 结果：frame=%s active=%s", self._pending_hwnd, window.hwnd)
+            if not self._worker_busy:
+                QTimer.singleShot(0, self._capture)
             return
         # Retain the previous translation through a transient empty OCR frame.
         if not items:
@@ -1008,12 +1126,28 @@ class MainWindow(QMainWindow):
         self._last_items = items
         self._last_image_size = (image_width, image_height)
         self.overlay.update_content(
-            self._selected_window,
+            window,
             items,
             self._layout_mode(),
             image_width,
             image_height,
         )
+        self._finish_frame_timing(render_entered_at)
+
+    def _finish_frame_timing(self, render_entered_at: float) -> None:
+        """Close the timing record with the stages the worker cannot see."""
+        rendered_at = time.perf_counter()
+        timing = self._last_timing
+        if timing:
+            timing["render_ms"] = (rendered_at - render_entered_at) * 1000.0
+            timing["callback_ms"] = max(
+                0.0,
+                (render_entered_at - self._frame_started_at) * 1000.0 - timing.get("total_ms", 0.0),
+            )
+            timing["roundtrip_ms"] = max(0.0, (rendered_at - self._frame_started_at) * 1000.0)
+            self._apply_latency()
+            self._log_frame_timing()
+        self._last_render_at = rendered_at
 
     def _on_process_failed(self, message: str) -> None:
         self._worker_busy = False

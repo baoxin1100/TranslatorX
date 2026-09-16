@@ -27,7 +27,16 @@ from .models import WindowInfo
 
 
 _PBYTE = ctypes.POINTER(ctypes.c_ubyte)
+# Waiting for the first frame of a session is unavoidable. Afterwards a window
+# that is not being recomposed (paused game, static dialog, occluded window)
+# never produces another frame, so blocking for the full timeout only adds
+# latency: the previous frame still shows that window's current content.
 _FRAME_TIMEOUT_SECONDS = 2.0
+_FRESH_FRAME_TIMEOUT_SECONDS = 0.12
+# Frames that arrive while no capture is running are drained from the pool and
+# cached at most this often, so a rare update is not lost without paying a
+# full-frame copy for every frame of a 60 fps game.
+_CACHE_REFRESH_SECONDS = 0.25
 
 
 class WgcCapture:
@@ -40,6 +49,8 @@ class WgcCapture:
         self._frame_event = threading.Event()
         self._frame_requested = False
         self._last_frame = None
+        self._last_frame_at = 0.0
+        self._fresh_session = True
         self._hwnd = 0
         self._frame_pool = None
         self._session = None
@@ -55,6 +66,7 @@ class WgcCapture:
         self._retry_after = 0.0
 
     def _start(self, window: WindowInfo) -> bool:
+        self._fresh_session = False
         if self._frame_pool is not None and self._hwnd == int(window.hwnd):
             return True
         self.close()
@@ -96,6 +108,9 @@ class WgcCapture:
             except Exception:
                 pass
             self._hwnd = int(window.hwnd)
+            self._last_frame = None
+            self._last_frame_at = 0.0
+            self._fresh_session = True
             self._session.StartCapture()
             return True
         except Exception:
@@ -111,13 +126,23 @@ class WgcCapture:
                 if self._frame_pool is None:
                     return
                 native_frame = self._frame_pool.TryGetNextFrame()
-                if native_frame is None or not self._frame_requested:
+                if native_frame is None:
+                    return
+                # The pool holds two buffers, so the arrived frame must be taken
+                # even when nothing asked for it. Cache it instead of throwing it
+                # away: a window that only updates once would otherwise lose that
+                # update, and the next capture would fall back to a stale frame.
+                now = time.monotonic()
+                stale = now - self._last_frame_at >= _CACHE_REFRESH_SECONDS
+                if not self._frame_requested and not stale:
                     return
                 frame = self._copy_frame(native_frame)
                 if frame is not None:
                     self._last_frame = frame
-                    self._frame_requested = False
-                    self._frame_event.set()
+                    self._last_frame_at = now
+                    if self._frame_requested:
+                        self._frame_requested = False
+                        self._frame_event.set()
         except Exception:
             self._logger.exception("WGC 帧读取失败")
         finally:
@@ -173,17 +198,29 @@ class WgcCapture:
             if not self._start(window):
                 return None
             with self._lock:
-                self._last_frame = None
-                self._frame_event.clear()
                 self._frame_requested = True
-            if not self._frame_event.wait(_FRAME_TIMEOUT_SECONDS):
+                self._frame_event.clear()
+                reusable = self._last_frame is not None and not self._fresh_session
+            # A session that has never delivered a frame has nothing to fall back
+            # on, so it waits out the full timeout. Afterwards a slightly older
+            # frame is far better than stalling the whole pipeline: an unchanging
+            # window cannot produce a fresher one anyway.
+            timeout = (
+                _FRESH_FRAME_TIMEOUT_SECONDS if reusable else _FRAME_TIMEOUT_SECONDS
+            )
+            if not self._frame_event.wait(timeout):
                 with self._lock:
                     self._frame_requested = False
-                self._logger.warning("WGC 在 %.1f 秒内未返回帧", _FRAME_TIMEOUT_SECONDS)
-                return None
-            with self._lock:
-                frame = self._last_frame
-                self._last_frame = None
+                    frame = self._last_frame
+                if frame is None:
+                    self._logger.warning("WGC 在 %.1f 秒内未返回帧", timeout)
+                    return None
+                self._logger.debug(
+                    "WGC %.0f ms 内无新帧，复用上一帧：hwnd=%s", timeout * 1000.0, window.hwnd
+                )
+            else:
+                with self._lock:
+                    frame = self._last_frame
             if frame is None:
                 return None
             frame = self._crop_to_client(frame, window.width, window.height)
@@ -233,6 +270,8 @@ class WgcCapture:
             self._closed_delegate = None
             self._frame_delegate = None
             self._last_frame = None
+            self._last_frame_at = 0.0
+            self._fresh_session = True
             self._last_size = None
             self._hwnd = 0
             self._active_logged = False

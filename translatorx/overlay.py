@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import time
 from dataclasses import dataclass
 from ctypes import wintypes
 
@@ -260,8 +261,27 @@ class TranslationOverlay(QWidget):
             latency_font = QFont(overlay_font_family(), 10)
             latency_font.setWeight(QFont.Weight.Normal)
             painter.setFont(latency_font)
-            latency_rect = QRectF(8, 6, max(1.0, self.width() - 16.0), 22.0)
-            latency_flags = Qt.TextFlag.TextSingleLine | Qt.AlignmentFlag.AlignRight
+            latency_flags = (
+                Qt.TextFlag.TextWordWrap
+                | Qt.AlignmentFlag.AlignRight
+                | Qt.AlignmentFlag.AlignTop
+            )
+            metrics = QFontMetricsF(latency_font)
+            # The breakdown wraps into more lines on a narrow overlay (a popup, for
+            # example), so reserve exactly the height the text needs.
+            width = max(1.0, self.width() - 16.0)
+            required = metrics.boundingRect(
+                QRectF(0, 0, width, 1000.0), latency_flags, self._latency_text
+            )
+            latency_rect = QRectF(
+                8.0,
+                6.0,
+                width,
+                min(
+                    max(1.0, self.height() - 12.0),
+                    max(metrics.height(), required.height()),
+                ),
+            )
             painter.setPen(QColor(0, 0, 0, 245))
             for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 painter.drawText(latency_rect.translated(dx, dy), latency_flags, self._latency_text)
@@ -297,8 +317,15 @@ class TranslationOverlay(QWidget):
         painter.end()
 
 
-def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
+def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0, timings: dict | None = None):
+    started = time.perf_counter()
     frame = capture_window_wgc(window)
+    wgc_ms = (time.perf_counter() - started) * 1000.0
+    if timings is not None:
+        # WGC only delivers a frame when the window content changed, so a static
+        # window makes it wait out its full timeout before the fallback runs.
+        timings["capture_wgc_ms"] = wgc_ms
+        timings["capture_fallback_ms"] = 0.0
     if _is_valid_wgc_capture(frame, window.width, window.height):
         _capture_logger.debug("截图后端=WGC hwnd=%s shape=%s", window.hwnd, frame.shape)
         return frame
@@ -308,6 +335,7 @@ def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
             window.hwnd,
             getattr(frame, "shape", None),
         )
+    fallback_started = time.perf_counter()
 
     screen, logical_rect = _screen_and_logical_rect(window)
     if screen is None:
@@ -339,6 +367,8 @@ def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
             )
             if _is_usable_capture(frame, window.width, window.height):
                 _capture_logger.info("截图后端=qt-hwnd hwnd=%s shape=%s", window.hwnd, frame.shape)
+                if timings is not None:
+                    timings["capture_fallback_ms"] = (time.perf_counter() - fallback_started) * 1000.0
                 return frame
             _capture_logger.warning(
                 "qt-hwnd 返回无效帧：hwnd=%s shape=%s",
@@ -364,6 +394,8 @@ def capture_window_bgr(window: WindowInfo, overlay_hwnd: int = 0):
         )
         if _is_usable_capture(frame, window.width, window.height):
             _capture_logger.info("截图后端=qt-screen hwnd=%s shape=%s", window.hwnd, frame.shape)
+            if timings is not None:
+                timings["capture_fallback_ms"] = (time.perf_counter() - fallback_started) * 1000.0
             return frame
         _capture_logger.warning(
             "qt-screen 返回无效帧：hwnd=%s shape=%s",

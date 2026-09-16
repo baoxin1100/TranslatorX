@@ -2,7 +2,40 @@ import numpy as np
 
 from translatorx.models import OcrItem
 import translatorx.worker as worker_module
-from translatorx.worker import ProcessingWorker, group_translation_items, should_translate_text
+from translatorx.worker import (
+    ProcessingWorker,
+    format_latency,
+    group_translation_items,
+    should_translate_text,
+)
+
+
+def test_latency_breakdown_covers_every_stage():
+    text = format_latency({
+        "wait_ms": 569, "capture_ms": 2014, "capture_wgc_ms": 2003, "capture_fallback_ms": 11,
+        "dispatch_ms": 1, "ocr_ms": 110, "det_ms": 60, "rec_ms": 47, "clean_ms": 2,
+        "cache_ms": 1, "translation_ms": 320, "callback_ms": 6, "render_ms": 4,
+        "total_ms": 2534, "roundtrip_ms": 2460, "skipped_ticks": 2,
+    })
+    for fragment in (
+        "等待 569", "截图 2014", "WGC 2003", "兜底 11", "派发 1",
+        "OCR 110", "预处理 3", "检测 60", "识别 47",
+        "清洗 2", "装配 1", "翻译 320", "回调 6", "渲染 4",
+        "单帧往返 2460", "刷新周期 3029", "跳过 2 次截拍", "其他 2",
+    ):
+        assert fragment in text, fragment
+    # The wait happens before the capture, so it is reported as the refresh
+    # period instead of being folded into the round trip.
+    assert "单帧往返 2460 ms = 截图 2014 + 处理 434 + 回调 6 + 渲染 4 + 其他 2" in text
+    assert "刷新周期 3029 ms = 等待 569 + 往返 2460" in text
+
+
+def test_latency_breakdown_survives_missing_values():
+    text = format_latency({})
+    assert text.count("\n") == 3
+    assert "单帧往返 0 ms" in text
+    assert "刷新周期 0 ms" in text
+    assert "跳过" not in text
 
 
 def test_skips_only_isolated_latin_letters():
