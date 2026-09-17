@@ -260,6 +260,14 @@ QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color:
 QLineEdit { min-height: 36px; padding: 0 10px; background: $surface; border: 1px solid $border; border-radius: 7px; }
 QLineEdit:focus { border: 2px solid $focus; }
 QPlainTextEdit#testResults { padding: 8px; background: $surface_sunken; border: 1px solid $border; border-radius: 7px; color: $text_label; }
+QScrollArea#settingsScroll { background: transparent; border: none; }
+QScrollArea#settingsScroll > QWidget { background: transparent; }
+QWidget#settingsContent { background: transparent; }
+QScrollBar:vertical { width: 10px; margin: 0; background: transparent; }
+QScrollBar::handle:vertical { min-height: 28px; background: $border_strong; border-radius: 5px; }
+QScrollBar::handle:vertical:hover { background: $border_input_hover; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QPushButton#settingsActionButton { min-height: 34px; padding: 0 14px; color: $accent_soft_text; background: $accent_soft_bg; border: 1px solid $accent_soft_border; border-radius: 7px; }
 QPushButton#settingsActionButton:hover { background: $accent_soft_hover_bg; border-color: $accent_soft_hover_border; }
 QPushButton#settingsActionButton:pressed { background: $accent_soft_pressed_bg; border-color: $focus; }

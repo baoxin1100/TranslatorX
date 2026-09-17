@@ -7,18 +7,21 @@ from ctypes import wintypes
 from time import perf_counter
 
 import requests
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QPoint, QRect, QThread, Signal, Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -239,6 +242,7 @@ class CredentialDialog(QDialog):
         self._on_about = on_about
         self._test_thread: InterfaceTestThread | None = None
         self._model_thread: ModelFetchThread | None = None
+        self._drag_offset: QPoint | None = None
 
         self.baidu_app_id = self._field("TRANSLATORX_BAIDU_APP_ID")
         self.baidu_secret = self._secret_field("TRANSLATORX_BAIDU_SECRET")
@@ -275,8 +279,17 @@ class CredentialDialog(QDialog):
         # Connect last so restoring the saved index does not rewrite the config.
         self.theme_combo.currentIndexChanged.connect(self._change_theme)
         header_layout.addWidget(self.theme_combo)
+        self._header = header
         root.addWidget(header)
-        root.addWidget(self._group(
+
+        # The credential groups need more room than a 1080p screen scaled to
+        # 150% can give, so they scroll while the header and the buttons stay put.
+        content = QWidget()
+        content.setObjectName("settingsContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        content_layout.addWidget(self._group(
             "百度翻译",
             [
                 ("APP ID", self.baidu_app_id),
@@ -287,7 +300,7 @@ class CredentialDialog(QDialog):
                 )),
             ],
         ))
-        root.addWidget(
+        content_layout.addWidget(
             self._group(
                 "腾讯翻译",
                 [
@@ -311,7 +324,7 @@ class CredentialDialog(QDialog):
         self.fetch_models_button.setToolTip("请求 Base URL/models，填充可选模型")
         self.fetch_models_button.clicked.connect(self._start_model_fetch)
         model_layout.addWidget(self.fetch_models_button)
-        root.addWidget(
+        content_layout.addWidget(
             self._group(
                 "OpenAI 兼容接口",
                 [("Base URL", self.openai_base_url), ("API Key", self.openai_api_key), ("模型", model_row)],
@@ -321,8 +334,18 @@ class CredentialDialog(QDialog):
         self.test_results.setObjectName("testResults")
         self.test_results.setReadOnly(True)
         self.test_results.setPlaceholderText("点击“接口测试”查看已配置接口的连通状态与延迟")
-        self.test_results.setFixedHeight(116)
-        root.addWidget(self.test_results)
+        # A minimum instead of a fixed height: the box absorbs the extra room of a
+        # tall screen and shrinks to its minimum on a short one.
+        self.test_results.setMinimumHeight(88)
+        content_layout.addWidget(self.test_results, 1)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setObjectName("settingsScroll")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setWidget(content)
+        root.addWidget(self.scroll_area, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         self.test_button = QPushButton("接口测试")
         self.test_button.setAccessibleName("测试翻译接口连通情况")
@@ -349,6 +372,62 @@ class CredentialDialog(QDialog):
         footer_layout.addStretch(1)
         footer_layout.addWidget(buttons)
         root.addWidget(footer)
+
+    def _drag_band(self) -> QRect:
+        """The strip of the dialog that behaves like a title bar."""
+        header = self._header.geometry()
+        return QRect(0, 0, self.width(), header.bottom() + 10)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._drag_band().contains(event.position().toPoint())
+        ):
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        else:
+            self._drag_offset = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def fit_to_screen(self, available: QRect | None = None) -> None:
+        """Keep the whole dialog inside the screen that holds it.
+
+        A frameless dialog is placed by Qt without any clamping, so on a short
+        screen (a 1080p display scaled to 150%, for example) the button row ended
+        up below the visible area and could not be reached at all.
+        """
+        if available is None:
+            screen = self.screen() or QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+            available = screen.availableGeometry()
+        margin = 24
+        # QScrollArea caps its own size hint, so ask the content how tall it wants
+        # to be and add the header, the buttons and the dialog margins around it.
+        chrome = max(0, self.sizeHint().height() - self.scroll_area.sizeHint().height())
+        content_height = self.scroll_area.widget().sizeHint().height() + chrome
+        width = min(max(self.width(), self.minimumWidth()), max(320, available.width() - margin * 2))
+        limit = max(280, available.height() - margin * 2)
+        height = max(self.minimumSizeHint().height(), min(content_height, limit))
+        height = min(height, limit)
+        self.resize(width, height)
+        x = available.x() + (available.width() - width) // 2
+        y = available.y() + max(0, (available.height() - height) // 2)
+        x = min(max(x, available.x()), max(available.x(), available.right() - width))
+        y = min(max(y, available.y()), max(available.y(), available.bottom() - height))
+        self.move(x, y)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.fit_to_screen()
 
     def _change_theme(self, index: int) -> None:
         theme_key = self.theme_combo.itemData(index)
