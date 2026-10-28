@@ -135,6 +135,53 @@ def group_translation_items(items: list[OcrItem]) -> list[OcrItem]:
     return result
 
 
+_HAN_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))
+_KANA_RANGES = ((0x3040, 0x30FF), (0x31F0, 0x31FF))
+_HANGUL_RANGES = ((0x1100, 0x11FF), (0xAC00, 0xD7AF))
+
+
+def _in_ranges(char: str, ranges) -> bool:
+    code = ord(char)
+    return any(start <= code <= end for start, end in ranges)
+
+
+def _script_counts(text: str) -> tuple[int, int, int, int]:
+    han = kana = hangul = latin = 0
+    for char in text:
+        if _in_ranges(char, _HAN_RANGES):
+            han += 1
+        elif _in_ranges(char, _KANA_RANGES):
+            kana += 1
+        elif _in_ranges(char, _HANGUL_RANGES):
+            hangul += 1
+        elif char.isascii() and char.isalpha():
+            latin += 1
+    return han, kana, hangul, latin
+
+
+def needs_translation(text: str, target_language: str) -> bool:
+    """False when the line already is written in the target language.
+
+    Sending Chinese UI text to a Chinese target is what made the free GLM model
+    answer a whole batch with the input unchanged - including the English lines
+    in that same batch. Keeping the already-correct lines out of the request
+    fixes the echo and stops the overlay from painting a copy of the original.
+    """
+    target = str(target_language or "").strip().lower()
+    han, kana, hangul, latin = _script_counts(text)
+    if target.startswith("zh"):
+        if kana or hangul:
+            return True
+        return not han or latin > han
+    if target.startswith("ja"):
+        return not kana
+    if target.startswith("ko"):
+        return not hangul
+    if target.startswith("en"):
+        return bool(han or kana or hangul)
+    return True
+
+
 def should_translate_text(text: str) -> bool:
     """Reject numeric/symbol-only OCR noise and isolated Latin hotkeys."""
     compact = [character for character in text.strip() if not character.isspace()]
@@ -221,6 +268,10 @@ class ProcessingWorker(QObject):
     completed = Signal(object, int, int)
     timing = Signal(object)
     failed = Signal(str)
+
+    # Bounds the first frame: the overlay fills in over the next captures
+    # instead of waiting for every line to come back from a slow model.
+    MAX_NEW_TEXTS_PER_FRAME = 10
 
     def __init__(self, enable_openvino: bool = True) -> None:
         super().__init__()
@@ -323,6 +374,13 @@ class ProcessingWorker(QObject):
             items = [item for item in items if should_translate_text(item.text)]
             before_group_count = len(items)
             items = group_translation_items(items)
+            # Lines already in the target language need no request and must not
+            # be painted back over the source.
+            items = [
+                item
+                for item in items
+                if needs_translation(item.text, config.target_language)
+            ]
             clean_ms = (time.perf_counter() - postprocess_started) * 1000.0
             if len(items) != before_group_count:
                 self._logger.info("合并连续文本：%s -> %s 个翻译单元", before_group_count, len(items))
@@ -347,6 +405,15 @@ class ProcessingWorker(QObject):
                 key = (config.engine, config.source_language, config.target_language, item.text)
                 if key not in self._cache and item.text not in missing_texts:
                     missing_texts.append(item.text)
+            if len(missing_texts) > self.MAX_NEW_TEXTS_PER_FRAME:
+                # A slow model would otherwise spend a whole minute on one
+                # frame. Lines translated later simply appear on a later frame.
+                self._logger.info(
+                    "本帧只翻译 %s 条，其余留到下一帧：共 %s 条",
+                    self.MAX_NEW_TEXTS_PER_FRAME,
+                    len(missing_texts),
+                )
+                missing_texts = missing_texts[: self.MAX_NEW_TEXTS_PER_FRAME]
 
             if missing_texts:
                 translation_started = time.perf_counter()
@@ -354,6 +421,10 @@ class ProcessingWorker(QObject):
                 translator = create_translator(config)
                 translations = translator.translate_batch(missing_texts)
                 for source, translated in zip(missing_texts, translations, strict=True):
+                    if not str(translated).strip():
+                        # A chunk the model could not answer; leave it
+                        # uncached so the next frame retries those lines.
+                        continue
                     key = (config.engine, config.source_language, config.target_language, source)
                     self._cache[key] = translated
                 translation_ms = (time.perf_counter() - translation_started) * 1000.0

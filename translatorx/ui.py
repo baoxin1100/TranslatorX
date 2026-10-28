@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 import logging
 from pathlib import Path
@@ -29,12 +30,14 @@ from .config_store import app_config
 from .launcher import remove_launcher_shortcuts, show_launcher
 from .paths import debug_capture_path
 from .models import LayoutMode, TranslatorConfig, WindowInfo
+from .providers import CUSTOM_PROVIDER_KEY, provider_name
 from .overlay import TranslationOverlay, capture_window_bgr
 from .updater import REPO_WEB_URL, fetch_latest_version, is_update_available
 from .version import get_app_version
 from .wgc_capture import close_wgc_capture
 from .settings import CredentialDialog
 from .theme import theme_manager, tinted_icon
+from .translators import create_translator, is_local_base_url
 from .windows import (
     PopupFollower,
     WindowedState,
@@ -340,7 +343,7 @@ class MainWindow(QMainWindow):
         ("百度翻译", "baidu"),
         ("百度大模型翻译", "baidu_llm"),
         ("腾讯翻译", "tencent"),
-        ("OpenAI 兼容接口", "openai"),
+        ("大模型接口", "openai"),
     ]
     LANGUAGE_ITEMS = [
         ("自动检测", "auto"),
@@ -387,6 +390,7 @@ class MainWindow(QMainWindow):
         self._borderless_hwnd = 0
         self._f8_registered = False
         self._tray_hint_shown = False
+        self._warmup_thread: threading.Thread | None = None
         self.overlay = TranslationOverlay()
         self.credential_dialog = CredentialDialog(self, on_about=self.open_about)
 
@@ -683,6 +687,7 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(index)
 
         restore_combo(self.engine_combo, "engine", self.ENGINE_ITEMS[0][1])
+        self._refresh_engine_labels()
         restore_combo(self.source_combo, "source_language", "auto")
         restore_combo(self.target_combo, "target_language", "zh-CN")
         layout = str(self._ui_settings.value("layout_mode", LayoutMode.BELOW.value))
@@ -703,6 +708,7 @@ class MainWindow(QMainWindow):
 
     def _on_worker_ready(self) -> None:
         self._ocr_ready = True
+        self._warm_up_local_model()
         self._logger.info("主界面收到 OCR ready 信号")
         self.run_button.setText("开始实时翻译  (F8)")
         self.run_button.setEnabled(self.window_combo.count() > 0)
@@ -710,6 +716,53 @@ class MainWindow(QMainWindow):
 
     def open_settings(self) -> None:
         self.credential_dialog.exec()
+        self._refresh_engine_labels()
+        self._warm_up_local_model()
+
+    def _refresh_engine_labels(self) -> None:
+        """Show which provider the generic large-model engine points at."""
+        index = self.engine_combo.findData("openai")
+        if index < 0:
+            return
+        key = str(self._ui_settings.value("TRANSLATORX_OPENAI_PROVIDER", "")).strip()
+        label = (
+            f"大模型 · {provider_name(key)}"
+            if key and key != CUSTOM_PROVIDER_KEY
+            else "大模型接口"
+        )
+        self.engine_combo.setItemText(index, label)
+
+    def _warm_up_local_model(self) -> None:
+        """Load a local model before the first frame asks for it.
+
+        A cold Ollama needs ~2 s to map the model into memory, which used to be
+        paid on the first translation. Doing it while the user is still picking
+        a window moves that cost out of the first frame.
+        """
+        config = self._config()
+        if config.engine != "openai":
+            return
+        if not is_local_base_url(config.credentials.get("openai_base_url", "")):
+            return
+        if self._warmup_thread is not None and self._warmup_thread.is_alive():
+            return
+        self._warmup_thread = threading.Thread(
+            target=self._run_warmup,
+            args=(config,),
+            name="translatorx-warmup",
+            daemon=True,
+        )
+        self._warmup_thread.start()
+
+    def _run_warmup(self, config: TranslatorConfig) -> None:
+        started = time.perf_counter()
+        try:
+            create_translator(config).translate_batch(["Hello"])
+            self._logger.info(
+                "本地模型预热完成：%.0f ms", (time.perf_counter() - started) * 1000.0
+            )
+        except Exception:
+            self._logger.debug("本地模型预热失败", exc_info=True)
 
     def refresh_windows(self) -> None:
         previous = self.window_combo.currentData()
@@ -1151,6 +1204,7 @@ class MainWindow(QMainWindow):
 
     def _on_process_failed(self, message: str) -> None:
         self._worker_busy = False
+        self._logger.warning("翻译失败：%s", message)
         if self._discard_worker_result:
             self._discard_worker_result = False
             if self._running:

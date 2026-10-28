@@ -40,7 +40,7 @@
 | 实时翻译链路 | 采帧 → OCR → 批量翻译 → 绘制译文，每 900 毫秒一轮；目标窗口不在前台时暂停截图，空 OCR 帧保留上一帧译文以减少闪烁 |
 | 窗口级截图 | 通过 Windows Graphics Capture 直接读取目标窗口的 D3D11 纹理，抓帧无效时回退到 Qt 截图 |
 | 本地 OCR | PP-OCRv5（`onnxocr`）在本机推理，优先 OpenVINO 加速，初始化失败自动回退 ONNX Runtime CPU |
-| 四种翻译引擎 | 百度通用翻译、百度大模型翻译、腾讯云 TMT、任意 OpenAI 兼容接口（`base_url` 与模型名可自填） |
+| 多种翻译引擎 | 百度通用翻译、百度大模型翻译、腾讯云 TMT、大模型接口（内置智谱 / 火山方舟 / 百炼 / 硅基流动 / 本地 Ollama 等 13 个服务商预设） |
 | 鼠标穿透译文层 | 译文覆盖在目标窗口上方且不拦截鼠标点击，支持原文下方与右侧两种布局，字号 9–28 可调 |
 | 深色 / 浅色主题 | 两套配色共用同一套设计令牌，配置页右上角下拉切换并立即生效；两种主题的正文对比度均满足 WCAG AA |
 | 桌面集成 | F8 全局热键采用低级键盘钩子（游戏独占输入时仍然生效）、系统托盘常驻、内置检查更新与一键唤起更新启动器 |
@@ -174,6 +174,8 @@ graph TD
 | `auto_borderless_fullscreen` | 是否将目标窗口转为无边框全屏 | `false` |
 | `theme` | 界面主题：`dark`（深色）/ `light`（浅色） | `dark` |
 | `window_hwnd` / `window_title` | 上次选择的目标窗口 | — |
+| `TRANSLATORX_OPENAI_PROVIDER` | 大模型服务商预设键：`zhipu` / `volcengine` / `siliconflow` / `custom` 等 | `openai` |
+| `TRANSLATORX_OPENAI_BASE_URL` / `_MODEL` | 大模型接口地址与模型名 | OpenAI 官方 |
 | `TRANSLATORX_*` | 各引擎凭据；密钥以 `_DPAPI` 后缀保存为密文 | — |
 
 ## 翻译接口
@@ -185,7 +187,28 @@ graph TD
 | 百度通用翻译 | POST | `https://fanyi-api.baidu.com/api/trans/vip/translate` | APP ID + 密钥签名 |
 | 百度大模型翻译 | POST | `https://fanyi-api.baidu.com/ait/api/aiTextTranslate` | `Authorization: Bearer <API Key>` |
 | 腾讯云机器翻译 | POST | `https://tmt.tencentcloudapi.com` | TC3-HMAC-SHA256，`X-TC-Version: 2018-03-21` |
-| OpenAI 兼容接口 | POST | `{base_url}/chat/completions` | `Authorization: Bearer <API Key>`，默认 `https://api.openai.com/v1` |
+| 大模型接口 | POST | `{base_url}/chat/completions` | `Authorization: Bearer <API Key>`，Base URL 与模型可自填；本机地址免 Key |
+
+### 大模型服务商预设
+
+设置页的「大模型接口」里选一个服务商，Base URL、常用模型与申请入口会自动填好，只需要再填 API Key。想用国内免费模型，选「智谱 BigModel」并在模型里选带「免费」标记的条目即可。
+
+| 服务商 | Base URL | 备注 |
+|---|---|---|
+| 智谱 BigModel | `https://open.bigmodel.cn/api/paas/v4` | GLM-4.7-Flash / GLM-4-Flash / GLM-Z1-Flash 免费 |
+| 火山方舟（豆包） | `https://ark.cn-beijing.volces.com/api/v3` | 模型 ID 也可填 `ep-` 接入点，额度以控制台为准 |
+| 阿里云百炼（通义千问） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 新账号有免费额度 |
+| 硅基流动 SiliconFlow | `https://api.siliconflow.cn/v1` | 用「获取模型」列出全部模型 |
+| DeepSeek / 月之暗面 / 讯飞星火 / 腾讯混元 / 百度千帆 / OpenRouter / OpenAI | 见设置页 | 均为 OpenAI 兼容接口 |
+| 本地 Ollama | `http://127.0.0.1:11434/v1` | 免 API Key，用「获取模型」读取本机已下载模型 |
+| 本地 LM Studio | `http://127.0.0.1:1234/v1` | 免 API Key，先在 LM Studio 里 Start Server |
+| 自定义 | 任意 | vLLM、llama.cpp、Xinference 等其他本机或自建服务 |
+
+免费额度与模型名以各服务商控制台为准。翻译链路上还有三项保护：
+
+- **只翻译需要翻译的行**：已经是目标语言的文本不发给模型，也不绘制译文（中文界面不会被再画一遍中文）
+- **限流重试**：429 / 5xx 自动重试两次，单个请求 20 秒超时，避免一帧卡死整条流水线
+- **数量兜底**：模型返回的条目数与输入不一致时自动对半拆分重发，小模型也能用
 
 ## 目录结构
 
@@ -197,7 +220,8 @@ translatorx/
 ├── wgc_capture.py      # Windows Graphics Capture + D3D11 抓帧
 ├── overlay.py          # 鼠标穿透译文层绘制，含 Qt 截图回退
 ├── windows.py          # Win32 封装：窗口枚举、DPI、Z 序、无边框全屏、F8 钩子
-├── translators.py      # 百度 / 百度大模型 / 腾讯 / OpenAI 兼容翻译客户端
+├── translators.py      # 百度 / 百度大模型 / 腾讯 / 大模型翻译客户端
+├── providers.py        # 大模型服务商预设：Base URL、免费模型、申请入口
 ├── settings.py         # 设置对话框、凭据、DPAPI 加解密、接口连通性测试
 ├── config_store.py     # JSON 配置存储（含旧版 INI 导入）
 ├── paths.py            # 配置与日志路径解析

@@ -71,6 +71,13 @@ class MONITORINFOEXW(ctypes.Structure):
     ]
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+MONITORENUMPROC = ctypes.WINFUNCTYPE(
+    wintypes.BOOL,
+    wintypes.HMONITOR,
+    wintypes.HDC,
+    ctypes.POINTER(wintypes.RECT),
+    wintypes.LPARAM,
+)
 
 user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
 user32.EnumWindows.restype = wintypes.BOOL
@@ -125,6 +132,13 @@ user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
 user32.MonitorFromWindow.restype = wintypes.HMONITOR
 user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW)]
 user32.GetMonitorInfoW.restype = wintypes.BOOL
+user32.EnumDisplayMonitors.argtypes = [
+    wintypes.HDC,
+    ctypes.POINTER(wintypes.RECT),
+    MONITORENUMPROC,
+    wintypes.LPARAM,
+]
+user32.EnumDisplayMonitors.restype = wintypes.BOOL
 if hasattr(user32, "GetDpiForWindow"):
     user32.GetDpiForWindow.argtypes = [wintypes.HWND]
     user32.GetDpiForWindow.restype = wintypes.UINT
@@ -635,12 +649,44 @@ def restore_windowed_state(hwnd: int, state: WindowedState | None) -> bool:
         wintypes.HWND(hwnd), None, x, y, width, height,
         SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
     ))
-def get_window_monitor_metrics(hwnd: int) -> tuple[int, int, int, str]:
-    """Return native monitor origin, target DPI and Windows display name."""
+def get_window_monitor_metrics(hwnd: int) -> tuple[int, int, int, int, int, str]:
+    """Return the native monitor rect, the target window DPI and display name.
+
+    The whole rectangle matters because Windows and Qt name monitors
+    differently: Win32 reports \\.\\DISPLAY1 while Qt exposes the EDID
+    friendly name ("NE160QDM-NZB"). The rectangle is what ties a target window
+    to the QScreen that must host its overlay.
+    """
     monitor = user32.MonitorFromWindow(wintypes.HWND(hwnd), MONITOR_DEFAULTTONEAREST)
     info = MONITORINFOEXW()
     info.cbSize = ctypes.sizeof(info)
     if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-        return 0, 0, 96, ""
+        return 0, 0, 0, 0, 96, ""
     dpi = int(user32.GetDpiForWindow(wintypes.HWND(hwnd))) if hasattr(user32, "GetDpiForWindow") else 96
-    return info.rcMonitor.left, info.rcMonitor.top, dpi or 96, info.szDevice
+    return (
+        info.rcMonitor.left,
+        info.rcMonitor.top,
+        info.rcMonitor.right,
+        info.rcMonitor.bottom,
+        dpi or 96,
+        info.szDevice,
+    )
+
+
+def list_monitors() -> list[tuple[str, int, int, int, int]]:
+    """Enumerate the desktop monitors as (device, left, top, right, bottom)."""
+    monitors: list[tuple[str, int, int, int, int]] = []
+
+    @MONITORENUMPROC
+    def callback(hmonitor, _hdc, _rect, _data) -> bool:
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(info)
+        if user32.GetMonitorInfoW(hmonitor, ctypes.byref(info)):
+            area = info.rcMonitor
+            monitors.append(
+                (info.szDevice, area.left, area.top, area.right, area.bottom)
+            )
+        return True
+
+    user32.EnumDisplayMonitors(None, None, callback, 0)
+    return monitors

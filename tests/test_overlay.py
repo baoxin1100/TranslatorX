@@ -1,5 +1,5 @@
 import numpy as np
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, QRect
 from PySide6.QtGui import QFont, QFontMetricsF
 from PySide6.QtWidgets import QApplication
 
@@ -11,6 +11,7 @@ from translatorx.overlay import (
     _is_valid_wgc_capture,
     _normalize_qt_capture,
     build_render_items,
+    find_screen_for_monitor,
     native_rect_to_qt,
 )
 
@@ -260,3 +261,71 @@ def test_qt_capture_normalization_rejects_wrong_aspect_ratio():
     frame = np.full((1200, 3840, 3), 127, dtype=np.uint8)
     normalized = _normalize_qt_capture(frame, 2560, 1600)
     assert normalized.shape == frame.shape
+
+
+class FakeScreen:
+    """A QScreen stand-in: only the members the lookup uses."""
+
+    def __init__(self, name, rect, dpr=1.0):
+        self._name = name
+        self._rect = QRect(*rect)
+        self._dpr = dpr
+
+    def name(self):
+        return self._name
+
+    def geometry(self):
+        return self._rect
+
+    def devicePixelRatio(self):
+        return self._dpr
+
+
+def test_screen_lookup_prefers_the_win32_device_name():
+    # Platforms that do expose the GDI name must match it before geometry.
+    screens = [
+        FakeScreen(r"\\.\DISPLAY1", (0, 0, 1, 1), 1.0),
+        FakeScreen(r"\\.\DISPLAY2", (0, 0, 1, 1), 1.0),
+    ]
+    found = find_screen_for_monitor(r"\\.\DISPLAY2", (-1920, 0, 0, 1080), screens, monitors=[])
+    assert found is screens[1]
+
+
+def test_screen_lookup_falls_back_to_geometry_for_edid_names():
+    # Qt 6 reports the EDID name, so a second monitor used to resolve to the
+    # primary screen and its overlay was drawn on the wrong monitor.
+    screens = [
+        FakeScreen("NE160QDM-NZB", (0, 0, 2048, 1280), 1.25),
+        FakeScreen("MAYA", (-1920, 0, 1536, 864), 1.25),
+    ]
+    found = find_screen_for_monitor(r"\\.\DISPLAY2", (-1920, 0, 0, 1080), screens, monitors=[])
+    assert found is screens[1]
+    primary = find_screen_for_monitor(r"\\.\DISPLAY1", (0, 0, 2560, 1600), screens, monitors=[])
+    assert primary is screens[0]
+
+
+def test_screen_lookup_matches_a_unique_size_on_a_mixed_dpi_desktop():
+    screens = [
+        FakeScreen("primary", (0, 0, 1920, 1080), 1.0),
+        FakeScreen("secondary", (1920, 0, 1920, 1080), 2.0),
+    ]
+    found = find_screen_for_monitor("secondary", (3840, 0, 7680, 2160), screens, monitors=[])
+    assert found is screens[1]
+
+
+def test_screen_lookup_pairs_screens_in_desktop_order_as_a_last_resort():
+    screens = [
+        FakeScreen("primary", (0, 0, 1000, 1000), 1.0),
+        FakeScreen("secondary", (-1920, 0, 1000, 1000), 1.0),
+    ]
+    monitors = [
+        (r"\\.\DISPLAY1", 0, 0, 2560, 1600),
+        (r"\\.\DISPLAY2", -1920, 0, 0, 1080),
+    ]
+    found = find_screen_for_monitor(r"\\.\DISPLAY2", (-1920, 0, 0, 1080), screens, monitors)
+    assert found is screens[1]
+
+
+def test_screen_lookup_returns_none_for_an_unknown_monitor():
+    screens = [FakeScreen("only", (0, 0, 1920, 1080), 1.0)]
+    assert find_screen_for_monitor("", (5000, 5000, 6000, 6000), screens, monitors=[]) is None

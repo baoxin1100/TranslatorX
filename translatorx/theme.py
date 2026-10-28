@@ -219,6 +219,7 @@ QFrame#footer { background: $footer_bg; border: none; border-bottom-left-radius:
 QLabel#windowTitle { font-weight: 700; font-size: 18px; }
 QLabel#settingsDialogTitle { font-weight: 700; font-size: 14px; color: $text; }
 QLabel#statusLabel, QLabel#hintLabel { color: $text_muted; font-size: 12px; }
+QLabel#settingsNote { color: $text_muted; font-size: 12px; }
 QLabel#fieldLabel { color: $text_label; font-weight: 600; }
 QComboBox {
   min-height: 44px; padding: 0 38px 0 13px; background: $surface;

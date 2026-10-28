@@ -29,8 +29,16 @@ from PySide6.QtWidgets import (
 
 from .config_store import app_config
 from .models import TranslatorConfig
+from .providers import (
+    CUSTOM_PROVIDER_KEY,
+    PROVIDERS,
+    get_provider,
+    normalize_base_url,
+    provider_name,
+    resolve_provider,
+)
 from .theme import theme_choices, theme_manager
-from .translators import create_translator
+from .translators import create_translator, is_local_base_url
 
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x01
@@ -117,9 +125,15 @@ class InterfaceTestThread(QThread):
                 bool(self.credentials.get("tencent_secret_id") and self.credentials.get("tencent_secret_key")),
             ),
             (
-                "OpenAI 兼容接口",
+                f"大模型 · {provider_name(self.credentials.get('openai_provider'))}",
                 "openai",
-                bool(self.credentials.get("openai_api_key") and self.credentials.get("openai_model")),
+                bool(
+                    self.credentials.get("openai_model")
+                    and (
+                        self.credentials.get("openai_api_key")
+                        or is_local_base_url(self.credentials.get("openai_base_url"))
+                    )
+                ),
             ),
         ]
         results: list[tuple[str, str, int | None, str] | None] = [None] * len(providers)
@@ -250,6 +264,7 @@ class CredentialDialog(QDialog):
         self.tencent_secret_id = self._field("TRANSLATORX_TENCENT_SECRET_ID")
         self.tencent_secret_key = self._secret_field("TRANSLATORX_TENCENT_SECRET_KEY")
         self.tencent_region = self._region_field()
+        self.provider_combo = self._provider_field()
         self.openai_base_url = self._field("TRANSLATORX_OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.openai_api_key = self._secret_field("TRANSLATORX_OPENAI_API_KEY")
         self.openai_model = self._model_field("TRANSLATORX_OPENAI_MODEL", "gpt-4.1-mini")
@@ -324,10 +339,21 @@ class CredentialDialog(QDialog):
         self.fetch_models_button.setToolTip("请求 Base URL/models，填充可选模型")
         self.fetch_models_button.clicked.connect(self._start_model_fetch)
         model_layout.addWidget(self.fetch_models_button)
+        self.provider_link = self._application_link("", "")
+        self.provider_note = QLabel("")
+        self.provider_note.setObjectName("settingsNote")
+        self.provider_note.setWordWrap(True)
         content_layout.addWidget(
             self._group(
-                "OpenAI 兼容接口",
-                [("Base URL", self.openai_base_url), ("API Key", self.openai_api_key), ("模型", model_row)],
+                "大模型接口",
+                [
+                    ("服务商", self.provider_combo),
+                    ("Base URL", self.openai_base_url),
+                    ("API Key", self.openai_api_key),
+                    ("模型", model_row),
+                    ("申请地址", self.provider_link),
+                    ("说明", self.provider_note),
+                ],
             )
         )
         self.test_results = QPlainTextEdit()
@@ -372,6 +398,13 @@ class CredentialDialog(QDialog):
         footer_layout.addStretch(1)
         footer_layout.addWidget(buttons)
         root.addWidget(footer)
+        # Restoring the saved provider must not overwrite the saved Base URL,
+        # so the first sync only fills the suggestions.
+        self._apply_provider(initial=True)
+        self.provider_combo.currentIndexChanged.connect(self._apply_provider)
+        # Pasting a vendor Base URL is the common path: adopt that vendor so
+        # its built-in models and application link appear too.
+        self.openai_base_url.editingFinished.connect(self._detect_provider_from_url)
 
     def _drag_band(self) -> QRect:
         """The strip of the dialog that behaves like a title bar."""
@@ -441,6 +474,94 @@ class CredentialDialog(QDialog):
     def _field(self, env_name: str, default: str = "") -> QLineEdit:
         value = str(self._settings.value(env_name, default))
         return QLineEdit(value)
+
+    def _provider_field(self) -> QComboBox:
+        preset = resolve_provider(
+            str(self._settings.value("TRANSLATORX_OPENAI_PROVIDER", "")),
+            str(self._settings.value("TRANSLATORX_OPENAI_BASE_URL", "https://api.openai.com/v1")),
+        )
+        field = QComboBox()
+        for item in PROVIDERS:
+            field.addItem(item.name, item.key)
+        index = field.findData(preset.key)
+        field.setCurrentIndex(index if index >= 0 else 0)
+        field.setAccessibleName("大模型服务商")
+        field.setToolTip("选择服务商后会自动填入 Base URL、常用模型与申请地址")
+        return field
+
+    def _apply_provider(self, index: int = -1, *, initial: bool = False) -> None:
+        """Prefill Base URL, models and the application link for a provider."""
+        preset = get_provider(self.provider_combo.currentData())
+        if not initial and preset.base_url:
+            self.openai_base_url.setText(preset.base_url)
+        if preset.docs_url:
+            self.provider_link.setText(
+                f'<a style="text-decoration:none" href="{preset.docs_url}">'
+                f"{preset.docs_text} ↗</a>"
+            )
+            self.provider_link.setAccessibleName(f"{preset.docs_text}，在浏览器中打开")
+            self.provider_link.setToolTip(preset.docs_url)
+        self.provider_note.setText(preset.note)
+        self._set_form_row_visible(self.provider_link, bool(preset.docs_url))
+        self._set_form_row_visible(self.provider_note, bool(preset.note))
+        # Providers with built-in models (智谱, 火山, ...) usually have no
+        # /models route at all, so the button can only ever produce a scary 401.
+        # The presets are the model list for them.
+        self.fetch_models_button.setVisible(not preset.models)
+        self.fetch_models_button.setToolTip("请求 Base URL/models，填充可选模型")
+        self._fill_model_choices(preset, keep_selection=initial)
+
+    def _detect_provider_from_url(self) -> None:
+        """Adopt the provider whose Base URL the user pasted, if it matches."""
+        if self.provider_combo.currentData() != CUSTOM_PROVIDER_KEY:
+            return
+        typed = normalize_base_url(self.openai_base_url.text()).casefold()
+        if not typed:
+            return
+        for preset in PROVIDERS:
+            if preset.base_url and normalize_base_url(preset.base_url).casefold() == typed:
+                index = self.provider_combo.findData(preset.key)
+                if index >= 0:
+                    self.provider_combo.setCurrentIndex(index)
+                return
+
+    @staticmethod
+    def _set_form_row_visible(field: QWidget, visible: bool) -> None:
+        """Hide a form row completely, its label included."""
+        field.setVisible(visible)
+        parent = field.parentWidget()
+        form = parent.layout() if parent is not None else None
+        if isinstance(form, QFormLayout):
+            label = form.labelForField(field)
+            if label is not None:
+                label.setVisible(visible)
+
+    def _fill_model_choices(self, preset, keep_selection: bool) -> None:
+        current = self._model_text()
+        if keep_selection:
+            wanted = current
+        elif preset.models:
+            wanted = preset.models[0].model
+        elif preset.key == CUSTOM_PROVIDER_KEY:
+            wanted = current
+        else:
+            # The provider has no built-in model list, so a model from the
+            # previous provider would only be wrong here.
+            wanted = ""
+        self.openai_model.blockSignals(True)
+        self.openai_model.clear()
+        for item in preset.models:
+            self.openai_model.addItem(item.label, item.model)
+        if wanted and wanted not in preset.model_ids:
+            # Keep a hand-typed or previously saved model selectable.
+            self.openai_model.addItem(wanted, wanted)
+        index = self.openai_model.findData(wanted) if wanted else -1
+        if index >= 0:
+            self.openai_model.setCurrentIndex(index)
+        elif wanted:
+            self.openai_model.setEditText(wanted)
+        self.openai_model.setEditable(True)
+        self.openai_model.blockSignals(False)
 
     def _model_field(self, env_name: str, default: str = "") -> QComboBox:
         value = str(self._settings.value(env_name, default))
@@ -514,6 +635,10 @@ class CredentialDialog(QDialog):
             _protect_secret(self.tencent_secret_key.text().strip()),
         )
         self._settings.setValue("TRANSLATORX_TENCENT_REGION", self.tencent_region.currentData())
+        self._settings.setValue(
+            "TRANSLATORX_OPENAI_PROVIDER",
+            str(self.provider_combo.currentData() or CUSTOM_PROVIDER_KEY),
+        )
         self._settings.setValue("TRANSLATORX_OPENAI_BASE_URL", self.openai_base_url.text().strip())
         self._settings.setValue("TRANSLATORX_OPENAI_API_KEY_DPAPI", _protect_secret(self.openai_api_key.text().strip()))
         self._settings.setValue("TRANSLATORX_OPENAI_MODEL", self._model_text())
@@ -550,18 +675,24 @@ class CredentialDialog(QDialog):
             models = [str(item) for item in result.get("models", [])]
             current = self._model_text()
             self.openai_model.clear()
-            self.openai_model.addItems(models)
-            if current and current in models:
-                self.openai_model.setCurrentText(current)
-            else:
-                self.openai_model.setCurrentText(models[0])
+            for model in models:
+                self.openai_model.addItem(model, model)
+            selected = current if current in models else models[0]
+            index = self.openai_model.findData(selected)
+            self.openai_model.setCurrentIndex(index if index >= 0 else 0)
             # After a successful discovery, make this a real selection control.
             # Manual editing remains available again if a later request fails.
             self.openai_model.setEditable(False)
             self.test_results.setPlainText(f"获取到 {len(models)} 个模型 · {latency} ms")
         else:
             self.openai_model.setEditable(True)
-            self.test_results.setPlainText(f"获取模型失败 · {latency} ms\n{result.get('error', '未知错误')}")
+            message = f"获取模型失败 · {latency} ms\n{result.get('error', '未知错误')}"
+            if get_provider(self.provider_combo.currentData()).models:
+                message += (
+                    "\n提示：这家服务商可能没有 /models 列表接口（401/404 很常见），"
+                    "模型已在下拉框预置，直接选一个；用「接口测试」可确认 Key 是否正常。"
+                )
+            self.test_results.setPlainText(message)
 
     def _finish_model_fetch(self) -> None:
         self.fetch_models_button.setEnabled(True)
@@ -572,7 +703,14 @@ class CredentialDialog(QDialog):
             thread.deleteLater()
 
     def _model_text(self) -> str:
-        return self.openai_model.currentText().strip()
+        """Return the model id, not the display label with its 免费 marker."""
+        text = self.openai_model.currentText().strip()
+        index = self.openai_model.findText(text)
+        if index >= 0:
+            data = self.openai_model.itemData(index)
+            if data:
+                return str(data).strip()
+        return text
 
     def _show_test_results(self, results: list[tuple[str, str, int | None, str]]) -> None:
         lines = []
@@ -606,6 +744,7 @@ class CredentialDialog(QDialog):
             "tencent_secret_id": self.tencent_secret_id.text().strip(),
             "tencent_secret_key": self.tencent_secret_key.text().strip(),
             "tencent_region": str(self.tencent_region.currentData() or "ap-guangzhou"),
+            "openai_provider": str(self.provider_combo.currentData() or CUSTOM_PROVIDER_KEY),
             "openai_base_url": self.openai_base_url.text().strip(),
             "openai_api_key": self.openai_api_key.text().strip(),
             "openai_model": self._model_text(),

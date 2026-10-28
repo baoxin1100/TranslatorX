@@ -6,6 +6,7 @@ from translatorx.worker import (
     ProcessingWorker,
     format_latency,
     group_translation_items,
+    needs_translation,
     should_translate_text,
 )
 
@@ -165,3 +166,21 @@ def test_processing_does_not_drop_items_after_the_first_sixteen(monkeypatch):
 
     assert len(completed[0][0]) == 24
     assert completed[0][0][-1].text == "Line 23"
+
+def test_chinese_lines_are_not_sent_to_a_chinese_translation():
+    assert not needs_translation("已安装的Mods", "zh-CN")
+    assert not needs_translation("搜索您想要的Mods.", "zh-CN")
+    assert not needs_translation("这是一个纯中文的提示", "zh-TW")
+
+
+def test_english_lines_still_need_a_chinese_translation():
+    assert needs_translation("Island Media Controls", "zh-CN")
+    assert needs_translation("Taskbar auto-hide per monitor", "zh-CN")
+    # A Chinese line that also carries kana is Japanese, not the target language.
+    assert needs_translation("設定を開く", "zh-CN")
+
+
+def test_english_target_skips_lines_already_in_english():
+    assert not needs_translation("Open settings", "en")
+    assert needs_translation("打开设置", "en")
+    assert needs_translation("設定を開く", "en")

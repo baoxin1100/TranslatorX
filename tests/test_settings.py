@@ -159,3 +159,91 @@ def test_settings_dialog_is_dragged_by_its_header_only(app, isolated_config):
          Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton)
     assert dialog.pos() == moved
     dialog.close()
+
+def test_provider_picker_prefills_base_url_and_free_models(app, isolated_config):
+    dialog = CredentialDialog()
+    combo = dialog.provider_combo
+    combo.setCurrentIndex(combo.findData("zhipu"))
+    app.processEvents()
+
+    assert dialog.openai_base_url.text() == "https://open.bigmodel.cn/api/paas/v4"
+    labels = [dialog.openai_model.itemText(index) for index in range(dialog.openai_model.count())]
+    assert "glm-4.7-flash（免费）" in labels
+    # The saved value must be the model id, not the decorated label.
+    assert dialog._model_text() == "glm-4.7-flash"
+    assert "GLM-4.7-Flash" in dialog.provider_note.text()
+
+
+def test_saving_settings_persists_the_provider_and_model_id(app, isolated_config):
+    dialog = CredentialDialog()
+    combo = dialog.provider_combo
+    combo.setCurrentIndex(combo.findData("volcengine"))
+    dialog._save_and_accept()
+
+    assert isolated_config.value("TRANSLATORX_OPENAI_PROVIDER") == "volcengine"
+    assert isolated_config.value("TRANSLATORX_OPENAI_BASE_URL").startswith("https://ark.")
+    assert isolated_config.value("TRANSLATORX_OPENAI_MODEL") == "doubao-seed-2.0-lite"
+
+
+def test_saved_provider_is_restored_when_the_dialog_reopens(app, isolated_config):
+    isolated_config.setValue("TRANSLATORX_OPENAI_PROVIDER", "deepseek")
+    isolated_config.setValue("TRANSLATORX_OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    isolated_config.setValue("TRANSLATORX_OPENAI_MODEL", "deepseek-chat")
+
+    dialog = CredentialDialog()
+    assert dialog.provider_combo.currentData() == "deepseek"
+    assert dialog.openai_base_url.text() == "https://api.deepseek.com/v1"
+    assert dialog._model_text() == "deepseek-chat"
+
+
+def test_provider_is_inferred_from_the_saved_base_url(app, isolated_config):
+    isolated_config.setValue(
+        "TRANSLATORX_OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"
+    )
+    isolated_config.setValue("TRANSLATORX_OPENAI_MODEL", "glm-4.7-flash")
+
+    dialog = CredentialDialog()
+    assert dialog.provider_combo.currentData() == "zhipu"
+    assert dialog._model_text() == "glm-4.7-flash"
+
+def test_pasting_a_vendor_base_url_adopts_its_provider(app, isolated_config):
+    dialog = CredentialDialog()
+    combo = dialog.provider_combo
+    combo.setCurrentIndex(combo.findData("custom"))
+    dialog.openai_base_url.setText("https://open.bigmodel.cn/api/paas/v4/")
+
+    dialog._detect_provider_from_url()
+
+    assert combo.currentData() == "zhipu"
+    assert dialog.openai_base_url.text() == "https://open.bigmodel.cn/api/paas/v4"
+    assert dialog._model_text() == "glm-4.7-flash"
+
+
+def test_model_fetch_failure_explains_a_missing_model_list(app, isolated_config):
+    dialog = CredentialDialog()
+    combo = dialog.provider_combo
+    combo.setCurrentIndex(combo.findData("zhipu"))
+
+    dialog._show_model_results(
+        {"ok": False, "error": "401 Client Error: Unauthorized", "latency": 113}
+    )
+
+    text = dialog.test_results.toPlainText()
+    assert "401" in text
+    assert "没有 /models 列表接口" in text
+
+def test_model_fetch_button_only_shows_when_the_provider_has_no_presets(app, isolated_config):
+    dialog = CredentialDialog()
+    dialog.show()
+    app.processEvents()
+    combo = dialog.provider_combo
+
+    combo.setCurrentIndex(combo.findData("zhipu"))
+    app.processEvents()
+    # 智谱 has no /models route, so the button would only ever fail.
+    assert dialog.fetch_models_button.isHidden()
+
+    combo.setCurrentIndex(combo.findData("siliconflow"))
+    app.processEvents()
+    assert not dialog.fetch_models_button.isHidden()
+    dialog.close()

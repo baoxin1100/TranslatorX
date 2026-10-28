@@ -27,6 +27,8 @@ icons/*
 translatorx-logo.zip
 
 # Local environment files
+.venv/
+venv/
 .env
 .env.*
 !.env.example

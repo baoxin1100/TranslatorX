@@ -17,6 +17,7 @@ from .windows import (
     exclude_window_from_capture,
     get_window_monitor_metrics,
     include_window_in_capture,
+    list_monitors,
     place_overlay_above_target,
 )
 
@@ -65,12 +66,103 @@ def native_rect_to_qt(
     )
 
 
+def _physical_screen_bounds(screen) -> tuple[int, int, int, int]:
+    """The physical-pixel rectangle Qt places a screen at in its virtual desktop."""
+    geometry = screen.geometry()
+    dpr = float(screen.devicePixelRatio() or 1.0)
+    return (
+        geometry.x(),
+        geometry.y(),
+        geometry.x() + round(geometry.width() * dpr),
+        geometry.y() + round(geometry.height() * dpr),
+    )
+
+
+def _bounds_close(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+    tolerance: int = 2,
+) -> bool:
+    return all(
+        abs(left - right) <= tolerance for left, right in zip(first, second, strict=True)
+    )
+
+
+def find_screen_for_monitor(
+    device_name: str,
+    monitor_rect: tuple[int, int, int, int],
+    screens: list | None = None,
+    monitors: list | None = None,
+):
+    """Return the QScreen that shows the Win32 monitor described by monitor_rect.
+
+    Qt does not expose the Win32 device name on Windows 10+: QScreen.name()
+    returns the EDID friendly name ("NE160QDM-NZB"), so a name lookup never
+    matched and every target window fell back to the primary screen. The
+    overlay of a window dragged to a second monitor was then drawn over the
+    primary monitor, which looked like translation had stopped working there.
+    Resolve the screen by geometry instead, keeping the native name as the
+    first choice in case a platform (or an older Qt) does return it.
+    """
+    candidates = list(screens if screens is not None else QApplication.screens())
+    if not candidates:
+        return None
+
+    wanted = str(device_name or "").strip().casefold()
+    if wanted:
+        for screen in candidates:
+            if str(screen.name() or "").strip().casefold() == wanted:
+                return screen
+
+    target = tuple(monitor_rect)
+    for screen in candidates:
+        if _bounds_close(_physical_screen_bounds(screen), target):
+            return screen
+
+    # A mixed-DPI desktop can place a screen at a different origin in Qt virtual
+    # desktop than in Win32, so a unique size match still identifies the monitor
+    # even when the origin does not line up.
+    same_size = [
+        screen
+        for screen in candidates
+        if _bounds_close(_physical_screen_bounds(screen)[2:], target[2:], tolerance=2)
+    ]
+    if len(same_size) == 1:
+        return same_size[0]
+
+    # Last resort: both lists describe the same desktop, so sort them into the
+    # same order and pair the entries up.
+    native = list(monitors if monitors is not None else list_monitors())
+    if native and len(native) == len(candidates):
+        ordered_native = sorted(native, key=lambda item: (item[1], item[2]))
+        ordered_screens = sorted(
+            candidates,
+            key=lambda screen: (screen.geometry().x(), screen.geometry().y()),
+        )
+        for native_item, screen in zip(ordered_native, ordered_screens, strict=True):
+            if tuple(native_item[1:5]) == target:
+                return screen
+    return None
+
+
 def _screen_and_logical_rect(target: WindowInfo):
-    monitor_left, monitor_top, dpi, device_name = get_window_monitor_metrics(target.hwnd)
-    screens = QApplication.screens()
-    screen = next((item for item in screens if item.name().casefold() == device_name.casefold()), None)
+    monitor_left, monitor_top, monitor_right, monitor_bottom, dpi, device_name = (
+        get_window_monitor_metrics(target.hwnd)
+    )
+    screen = find_screen_for_monitor(
+        device_name, (monitor_left, monitor_top, monitor_right, monitor_bottom)
+    )
     if screen is None:
         screen = QApplication.primaryScreen()
+        _capture_logger.warning(
+            "未能匹配目标窗口所在显示器，回退主屏：hwnd=%s device=%s monitor=(%s,%s,%s,%s)",
+            target.hwnd,
+            device_name,
+            monitor_left,
+            monitor_top,
+            monitor_right,
+            monitor_bottom,
+        )
     origin = screen.geometry().topLeft() if screen is not None else QPoint(0, 0)
     return screen, native_rect_to_qt(target, monitor_left, monitor_top, dpi, origin)
 
